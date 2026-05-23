@@ -144,11 +144,21 @@ class GeminiDirectAgent(BaseAgent):
                     state.abort_reason = stop_reason
                     break
                 state.parse_repair_attempts += 1
-                forced_message = f"Your last response was invalid but C004 will recover if you comply: {redact_text(err)}. Return exactly one JSON object using the action protocol. Escape newlines inside JSON strings as \n; no markdown."
+                forced_message = f"Your last response was invalid but C004.1 will recover if you comply: {redact_text(err)}. Return exactly one JSON object using the action protocol. Escape newlines inside JSON strings as \n; no markdown."
                 last_action_result = forced_message
                 continue
 
             state.last_action = action.raw or {"action": action.action}
+            if self._requires_reflection(state) and action.action != "reflect":
+                state.behavior_repair_attempts += 1
+                state.add_ledger("Reflection required before next repair action")
+                if self.trace:
+                    self.trace.model_action(step, action.raw or {"action": action.action})
+                    self.trace.event("reflection_required", step=step, action=action.raw or {"action": action.action}, failed_check_step=state.last_failed_check_step)
+                forced_message = self._reflection_required_message(state)
+                last_action_result = forced_message
+                continue
+
             if self._violates_artifact_contract(state, action):
                 state.artifact_contract_repairs += 1
                 required = ", ".join(ro.path for ro in state.required_outputs)
@@ -168,6 +178,12 @@ class GeminiDirectAgent(BaseAgent):
             state.add_ledger(action.ledger or action.purpose or action.reason or action.message)
             if self.trace:
                 self.trace.model_action(step, action.raw or {"action": action.action})
+
+            if action.action == "reflect":
+                self._record_reflection(state, step, action)
+                forced_message = self._post_reflection_repair_message(state)
+                last_action_result = forced_message
+                continue
 
             if action.action == "finish":
                 state.phase = "CRITIC_GATE"
@@ -305,17 +321,48 @@ class GeminiDirectAgent(BaseAgent):
         latest = state.public_checks[-1]
         if latest.passed or latest.step <= state.last_mutation_step:
             return None
-        if state.last_failed_check_step == latest.step:
-            return None
-        state.last_failed_check_step = latest.step
-        state.last_failed_check_digest = compact_text(latest.evidence, 1800)
-        state.behavior_repair_attempts += 1
+        if state.last_failed_check_step != latest.step:
+            state.last_failed_check_step = latest.step
+            state.last_failed_check_digest = compact_text(latest.evidence, 1800)
+            state.behavior_repair_attempts += 1
+        if self._requires_reflection(state):
+            return self._reflection_required_message(state)
+        return self._post_reflection_repair_message(state)
+
+    def _requires_reflection(self, state: AgentState) -> bool:
+        latest = state.public_checks[-1] if state.public_checks else None
+        return bool(
+            latest
+            and not latest.passed
+            and latest.step > state.last_mutation_step
+            and state.last_reflection_failed_check_step < latest.step
+        )
+
+    def _reflection_required_message(self, state: AgentState) -> str:
         return (
-            "Behavior repair required: the latest public/self-check failed. Treat this failure as the current source of truth. "
-            "Do not finish and do not repeat broad exploration. Extract the failing assertion/traceback/diff/missing behavior, "
-            "patch the code/artifact to address that exact behavior, then rerun the focused check.\n\n"
+            "Reflection required before repair. Return exactly one JSON object with action=reflect. "
+            "Do not patch yet. The reflection must answer: "
+            "1) what exact assertion/check failed, 2) what behavior was expected, "
+            "3) which file/function likely controls it, 4) the smallest patch, "
+            "5) the focused check to rerun.\n\n"
             f"FAILED_CHECK_DIGEST:\n{state.last_failed_check_digest}"
         )
+
+    def _post_reflection_repair_message(self, state: AgentState) -> str:
+        return (
+            "Reflection accepted. Now perform the smallest repair described by the reflection. "
+            "Prefer read_file only if you need exact local context; otherwise patch the implicated file/artifact, "
+            "then rerun the focused check from the reflection. Do not finish until fresh behavioral evidence passes.\n\n"
+            f"REFLECTION:\n{state.last_reflection}"
+        )
+
+    def _record_reflection(self, state: AgentState, step: int, action: AgentAction) -> None:
+        state.last_reflection_step = step
+        state.last_reflection_failed_check_step = state.last_failed_check_step
+        state.last_reflection = compact_text(action.message or action.reason or action.ledger, 1800)
+        state.add_ledger(f"Reflection step {step}: {state.last_reflection}")
+        if self.trace:
+            self.trace.event("reflection", step=step, failed_check_step=state.last_failed_check_step, reflection=state.last_reflection)
 
     def _has_unrepaired_failed_check(self, state: AgentState) -> bool:
         latest = state.public_checks[-1] if state.public_checks else None

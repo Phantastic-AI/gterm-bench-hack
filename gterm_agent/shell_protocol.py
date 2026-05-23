@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
-ActionName = Literal["read_file", "write_file", "list_files", "shell", "finish", "abort"]
+ActionName = Literal["read_file", "write_file", "list_files", "shell", "reflect", "finish", "abort"]
 
 DENYLIST_PATTERNS = [
     re.compile(r"\b(printenv|env)\b.*\b(GEMINI|GOOGLE|KEY|TOKEN|SECRET)", re.I),
@@ -37,7 +37,7 @@ class AgentAction:
 def parse_action(text: str) -> AgentAction:
     data = _json_from_text(text)
     action = data.get("action")
-    valid = {"read_file", "write_file", "list_files", "shell", "finish", "abort"}
+    valid = {"read_file", "write_file", "list_files", "shell", "reflect", "finish", "abort"}
     if action not in valid:
         raise ValueError(f"Invalid action {action!r}; expected one of {sorted(valid)}")
     ledger = str(data.get("ledger") or "")
@@ -64,6 +64,11 @@ def parse_action(text: str) -> AgentAction:
         path = normalize_app_path(str(data.get("path") or "/app"), allow_file=False)
         max_depth = max(1, min(int(data.get("max_depth") or 3), 6))
         return AgentAction("list_files", path=path, max_depth=max_depth, purpose=purpose, ledger=ledger, raw=data)
+    if action == "reflect":
+        message = str(data.get("reflection") or data.get("message") or data.get("reason") or ledger or "")
+        if not message.strip():
+            raise ValueError("reflect action requires reflection/message text")
+        return AgentAction("reflect", reason=message, message=message, ledger=ledger, raw=data)
     reason = str(data.get("reason") or data.get("finish_reason") or data.get("message") or "")
     return AgentAction(action, reason=reason, message=str(data.get("message") or reason), ledger=ledger, raw=data)
 

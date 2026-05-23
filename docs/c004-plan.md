@@ -34,3 +34,7 @@ C004 is Codex-authored. Gemini 3.5 Flash is the task-solving model inside the ha
 ## Expected effect
 
 C004 should help tasks where the model runs a public check, sees a failing assertion, and would otherwise finish or wander. It will not magically solve tasks where no meaningful public/self-check exists or where the model cannot infer the target behavior from visible files and task text.
+
+## C004.1 reflection gate
+
+C004.1 adds an explicit `reflect` action. After a failed public/self-check, the harness requires a structured reflection before patching. The reflection must name the failed assertion/check, expected behavior, likely file/function, smallest patch, and focused check to rerun. This is intended to make the repair loop more Ralph-like: check → reflect → patch → check.

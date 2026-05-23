@@ -3,9 +3,11 @@ name: Behavior repair loop with required-artifact enforcement
 model: google/gemini-3.5-flash
 base: C003_adaptive_thinking
 status: experimental
+version: 0.4.1-c004-reflection
 features:
   - preserves C003 required-output artifact contract for simple_file tasks
   - adds behavior repair prompt rule for failed public/self-checks
+  - requires a structured reflect action before repair after a failed public/self-check
   - records latest failed check digest in AgentState
   - forces repair-oriented follow-up after failed checks for code/debug, browser/security, binary, and data-query tasks
   - rejects finish when the latest failed public/self-check has not been followed by a mutation/fresh repair

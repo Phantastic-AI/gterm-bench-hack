@@ -20,7 +20,7 @@ Phase = Literal[
 ]
 
 CANDIDATE_ID = "C004_behavior_repair_loop"
-AGENT_VERSION = "0.4.0-c004-behavior-repair"
+AGENT_VERSION = "0.4.1-c004-reflection"
 MAX_PROMPT_TOKENS_BEFORE_COMPACT = 80_000
 PROMPT_CHAR_BUDGET = MAX_PROMPT_TOKENS_BEFORE_COMPACT * 4
 
@@ -141,6 +141,9 @@ class AgentState:
     behavior_repair_attempts: int = 0
     last_failed_check_step: int = 0
     last_failed_check_digest: str = ""
+    last_reflection_step: int = 0
+    last_reflection_failed_check_step: int = 0
+    last_reflection: str = ""
 
     def elapsed_sec(self) -> int:
         return int(time.monotonic() - self.started_monotonic)

@@ -36,6 +36,7 @@ Valid actions:
 {"action":"write_file","path":"relative/or/absolute/path","content":"complete file content","ledger":"brief state update"}
 {"action":"list_files","path":"relative/or/absolute/path","ledger":"brief state update"}
 {"action":"shell","command":"command to run","timeout_sec":60,"ledger":"brief state update"}
+{"action":"reflect","reflection":"1. failed assertion/check: ... 2. expected behavior: ... 3. likely file/function: ... 4. smallest patch: ... 5. focused check: ...","ledger":"brief repair hypothesis"}
 {"action":"finish","message":"concise summary of completed work and checks","ledger":"final state update"}
 {"action":"abort","reason":"why the task cannot be completed safely or with available evidence","ledger":"final state update"}
 
@@ -51,7 +52,9 @@ Terminal-Bench environment reality:
 Behavior repair rule:
 - File existence is not enough unless the task is explicitly only a file-existence task.
 - When a public/self-check fails, treat the failing assertion, traceback, diff, exit code, or missing behavior as the current source of truth.
-- Your next useful action should repair the behavior named by the latest failed check, not repeat broad exploration.
+- Your next response after a failed public/self-check should be a `reflect` action, not an immediate patch.
+- In the reflection, identify the exact failed assertion/check, expected behavior, likely file/function, smallest patch, and focused check to rerun.
+- After reflection, repair the behavior named by the latest failed check, not repeat broad exploration.
 - After a repair, rerun the most relevant focused check. Finish only after fresh evidence supports the required behavior.
 ```
 
