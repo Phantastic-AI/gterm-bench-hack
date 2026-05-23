@@ -189,7 +189,8 @@ def classify_task_budget(instruction: str, requested_max_steps: int, requested_w
     has_browser = any(k in text for k in ("selenium", "browser", "chrome", "xss", "html", "javascript", "alert", "iframe"))
     has_binary = any(k in text for k in ("elf", "binary", "reverse engineer", "disassemble", "objdump", "readelf"))
     has_code = any(k in text for k in ("fix", "bug", "test", "pytest", "npm", "compile", "build", "implement", "function", "script", "async"))
-    has_simple_output = any(k in text for k in ("write", "create", "save", "output", "put", "store")) and bool(_APP_PATH_RE.search(instruction) or _PATH_RE.search(instruction))
+    has_output_path = bool(_APP_PATH_RE.search(instruction) or _PATH_RE.search(instruction))
+    has_simple_output = (any(k in text for k in ("write", "create", "save", "output", "put", "store")) or has_regex_task) and has_output_path
     if has_data_query:
         cls, steps, wall, shells, no_prog, timeout, why = "data_query", 34, 540, 56, 4, 120, "SQL/data tasks need high reasoning but bounded shell loops"
     elif has_browser:

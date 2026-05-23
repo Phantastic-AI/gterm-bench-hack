@@ -50,6 +50,7 @@ Final target/version will be confirmed before submission.
 
 ## Current research docs
 
+- [Current State](CURRENT_STATE.md)
 - [Custom Harness Plan](docs/custom-harness-plan.md)
 - [Research Synthesis](docs/research-synthesis.md)
 - [Trace-as-Code Methodology](docs/trace-as-code-methodology.md)
@@ -62,6 +63,7 @@ Final target/version will be confirmed before submission.
 - [C001 System Prompt](docs/C001_LEDGER_VERIFY_SYSTEM_PROMPT.md)
 - [C002 Results](docs/c002-results.md)
 - [C003 Results](docs/c003-results.md)
+- [Gemini Meta-Optimizer](docs/gemini-meta-optimizer.md)
 - [Final Report](docs/final-report.md)
 
 

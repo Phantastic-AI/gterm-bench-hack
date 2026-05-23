@@ -1,0 +1,49 @@
+{
+  "metadata": {
+    "gemini_api_called": true,
+    "generated_at": "2026-05-23T22:17:16Z",
+    "input": "meta_optimizer/samples/c002_compact_summary.json",
+    "live_harness_modified": false,
+    "model": "gemini-3.5-flash",
+    "proposal_only": true,
+    "usage": {
+      "candidatesTokenCount": 500,
+      "promptTokenCount": 804,
+      "promptTokensDetails": [
+        {
+          "modality": "TEXT",
+          "tokenCount": 804
+        }
+      ],
+      "serviceTier": "standard",
+      "thoughtsTokenCount": 793,
+      "totalTokenCount": 2097
+    }
+  },
+  "proposal": {
+    "anti_overfit_checks": [
+      "Ensure the negative patterns are general linguistic indicators of failure/placeholder status rather than task-specific strings.",
+      "Verify that the filter is bypassable or configurable via task metadata if a task explicitly expects a negative-sounding string as its correct answer."
+    ],
+    "candidate_boundary": "proposal artifact only; not the actual C003 unless integrated later",
+    "expected_effect": "Reduces false-positive task completions by preventing the harness from accepting agent failure explanations or echoed placeholders as valid task solutions.",
+    "files_likely_touched_if_integrated": [
+      "harness/utils/extraction.py"
+    ],
+    "implementation_sketch": [
+      "Define a list of negative-context regex patterns (e.g., 'failed to', 'could not find', 'placeholder', 'example output', 'error:') in the extraction module.",
+      "Modify the primary extraction function (e.g., `extract_required_output`) to run candidate matches against these negative patterns.",
+      "If a match is flagged as negative context, discard it or fall back to a secondary extraction strategy rather than returning it as a valid final answer."
+    ],
+    "narrow_patch": "Introduce a negative-context filter in the harness output extraction utility to reject extracted answers that contain explicit failure indicators, placeholder patterns, or exact prompt-echoed templates.",
+    "problem_observed": "Required-output extraction is too permissive, occasionally extracting negative-context statements (e.g., failure explanations, placeholders, or echoed instructions) as valid task outputs, leading to false finishes or incorrect reward evaluations.",
+    "proposal_title": "Stricter Negative-Context Filtering for Required-Output Extraction",
+    "risks": [
+      "Overly aggressive filtering might reject a valid output if it coincidentally contains a blacklisted word (e.g., a task where the correct output literally contains the word 'error')."
+    ],
+    "validation_plan": [
+      "Unit test the extraction utility with mock agent outputs containing both valid answers and negative-context failure messages.",
+      "Run a dry-run evaluation on a subset of completed C002 tasks to verify that valid outputs are still extracted correctly while false positives are successfully filtered."
+    ]
+  }
+}
