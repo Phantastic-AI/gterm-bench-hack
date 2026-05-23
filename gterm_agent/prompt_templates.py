@@ -55,6 +55,7 @@ def render_turn_context(
         "failure_signatures": [fs.__dict__ for fs in state.failure_signatures[-8:]],
         "public_checks": [pc.__dict__ for pc in state.public_checks[-8:]],
     }
+    task_policy = _task_policy(state)
     text = f"""TASK:
 {task_text}
 
@@ -83,6 +84,9 @@ FRESHNESS_REQUIREMENTS:
 - Public/self-check evidence must be fresh relative to the latest relevant edits.
 - If checks are unavailable or not applicable, explain the visible evidence used instead in the finish message.
 
+TASK_POLICY:
+{task_policy}
+
 """
     if forced_message:
         text += f"RUNTIME_GATE_MESSAGE:\n{forced_message}\n\n"
@@ -91,3 +95,19 @@ FRESHNESS_REQUIREMENTS:
         # Last-ditch deterministic compaction. Normal prompts should be far smaller.
         text = compact_text(text, PROMPT_CHAR_BUDGET)
     return text
+
+
+def _task_policy(state: AgentState) -> str:
+    if state.task_class == "simple_file":
+        required_paths = ", ".join(ro.path for ro in state.required_outputs) or "the requested output path"
+        return (
+            "This is a simple file-output task. You are in a minimal Terminal-Bench container: "
+            "do not assume Python/Node/package managers/compilers/network exist. Prefer POSIX shell "
+            "and the write_file action. Do not burn steps probing optional interpreters. If the required "
+            f"answer can be derived from the prompt or visible files, write a first candidate to {required_paths} early, "
+            "then verify existence/content with test/stat/head/grep/sed/awk before finish."
+        )
+    return (
+        "Assume a minimal Terminal-Bench container. Prefer POSIX shell primitives before optional runtimes; "
+        "only probe/install language tools when the task clearly requires them or visible files justify it."
+    )

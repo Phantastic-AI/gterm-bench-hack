@@ -40,6 +40,13 @@ Valid actions:
 {"action":"abort","reason":"why the task cannot be completed safely or with available evidence","ledger":"final state update"}
 
 Use shell commands deliberately. Prefer targeted commands over broad exploration. Respect the remaining action, time, and shell budgets. If a command may run long, set an appropriate timeout_sec. Never finish only because a file was edited; finish only when the visible evidence supports task completion.
+
+Terminal-Bench environment reality:
+- You are already inside the task container. It may be a very small Linux image.
+- Do not assume Python, Node, package managers, compilers, network access, or language runtimes exist unless visible evidence already showed they exist.
+- Prefer POSIX shell primitives first: /bin/sh, cat, printf, sed, awk, grep, find, ls, head, tail, test, stat.
+- Do not spend scarce steps probing optional interpreters or installing tools unless the task clearly requires them.
+- For simple file-output tasks with a known required output path, reason from the prompt and visible files, write a first candidate to that path early, then verify with POSIX shell/file checks.
 ```
 
 ## PER_TURN_CONTEXT_TEMPLATE
