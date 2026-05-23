@@ -20,8 +20,11 @@ from .state import (
     AgentState,
     GateResult,
     PublicCheck,
+    action_fingerprint,
+    classify_task_budget,
     compact_text,
     extract_required_outputs,
+    is_passive_action,
     is_public_check_command,
 )
 from .trace_writer import TraceWriter
@@ -48,7 +51,7 @@ class GeminiDirectAgent(BaseAgent):
         model = self.model_name or "google/gemini-3.5-flash"
         self.gemini_model = model.split("/", 1)[1] if model.startswith("google/") else model
         self.trace: TraceWriter | None = None
-        self.system_prompt = load_system_prompt()
+        self.system_prompt = load_system_prompt() + "\n\nC002 runtime addendum: recover from malformed action JSON, obey task-class budgets, avoid repeated passive reads, and finish immediately when required outputs plus fresh public/self-check evidence satisfy the runtime gate."
 
     @staticmethod
     def name() -> str:
@@ -66,17 +69,20 @@ class GeminiDirectAgent(BaseAgent):
 
     async def run(self, instruction: str, environment: BaseEnvironment, context: AgentContext) -> None:
         state = AgentState()
+        budget = classify_task_budget(instruction, self.max_steps, self.max_wall_time_sec, self.max_shell_calls, self.command_timeout_sec)
+        state.task_class = budget.task_class
+        state.task_budget = budget.__dict__.copy()
         state.required_outputs = extract_required_outputs(instruction)
-        state.add_ledger(f"Initialized C001 with {len(state.required_outputs)} required output candidate(s).")
+        state.add_ledger(f"Initialized C002 {budget.task_class} budget: steps={budget.max_steps}, shell={budget.max_shell_calls}, wall={budget.max_wall_time_sec}s, outputs={len(state.required_outputs)}.")
         self.trace = TraceWriter(self.logs_dir, candidate_id=CANDIDATE_ID, model=self.gemini_model, run_id=environment.session_id)
         self.trace.write_task(instruction)
         client = GeminiClient(model=self.gemini_model)
 
         bootstrap = await self._exec(
             environment,
-            "pwd; echo '---'; ls -la; echo '---'; find . -maxdepth 3 -type f | sed 's#^./##' | head -240",
+            "pwd; echo '---'; ls -la; echo '---'; find . -maxdepth 3 -type f | sed 's#^./##' | head -200",
             "/app",
-            60,
+            min(45, budget.command_timeout_sec),
             "bootstrap environment",
             step=0,
             state=state,
@@ -87,18 +93,18 @@ class GeminiDirectAgent(BaseAgent):
         stop_reason = "budget exhausted"
         status = "abort"
 
-        for step in range(1, self.max_steps + 1):
+        for step in range(1, budget.max_steps + 1):
             state.step = step
-            if state.elapsed_sec() >= self.max_wall_time_sec:
-                stop_reason = f"max_wall_time_sec {self.max_wall_time_sec} reached"
+            if state.elapsed_sec() >= budget.max_wall_time_sec:
+                stop_reason = f"max_wall_time_sec {budget.max_wall_time_sec} reached"
                 state.abort_reason = stop_reason
                 break
-            if state.shell_calls >= self.max_shell_calls:
-                stop_reason = f"max_shell_calls {self.max_shell_calls} reached"
+            if state.shell_calls >= budget.max_shell_calls:
+                stop_reason = f"max_shell_calls {budget.max_shell_calls} reached"
                 state.abort_reason = stop_reason
                 break
-            if state.no_progress_count >= 4:
-                stop_reason = "no-progress loop detected"
+            if state.no_progress_count >= budget.no_progress_budget:
+                stop_reason = f"no-progress loop detected after {state.no_progress_count} passive/repeated actions"
                 state.abort_reason = stop_reason
                 break
 
@@ -110,9 +116,9 @@ class GeminiDirectAgent(BaseAgent):
                 state=state,
                 bootstrap_digest=bootstrap_digest,
                 last_action_result=last_action_result,
-                max_steps=self.max_steps,
-                max_shell_calls=self.max_shell_calls,
-                max_wall_time_sec=self.max_wall_time_sec,
+                max_steps=budget.max_steps,
+                max_shell_calls=budget.max_shell_calls,
+                max_wall_time_sec=budget.max_wall_time_sec,
                 forced_message=forced_message,
             )
             forced_message = None
@@ -134,7 +140,8 @@ class GeminiDirectAgent(BaseAgent):
                     stop_reason = err
                     state.abort_reason = stop_reason
                     break
-                forced_message = f"Your last response was invalid: {redact_text(err)}. Return exactly one JSON object using the C001 action protocol."
+                state.parse_repair_attempts += 1
+                forced_message = f"Your last response was invalid but C002 will recover if you comply: {redact_text(err)}. Return exactly one JSON object using the action protocol. Escape newlines inside JSON strings as \n; no markdown."
                 last_action_result = forced_message
                 continue
 
@@ -150,7 +157,7 @@ class GeminiDirectAgent(BaseAgent):
                     self.trace.critic_gate(step, gate.to_dict())
                 if gate.ok:
                     status = "finish"
-                    stop_reason = action.message or action.reason or "C001 pre-finish gate passed"
+                    stop_reason = action.message or action.reason or "C002 pre-finish gate passed"
                     state.phase = "FINISH"
                     break
                 state.phase = "REPAIR"
@@ -167,11 +174,21 @@ class GeminiDirectAgent(BaseAgent):
                 state.phase = "ABORT"
                 break
 
-            obs = await self._dispatch_action(environment, step, action, state)
+            obs = await self._dispatch_action(environment, step, action, state, budget.command_timeout_sec)
             last_action_result = obs
             state.phase = "OBSERVE"
+            auto_gate = await self._auto_finish_gate(environment, state, action)
+            if auto_gate is not None:
+                if self.trace:
+                    self.trace.critic_gate(step, auto_gate.to_dict())
+                if auto_gate.ok:
+                    status = "finish"
+                    stop_reason = f"C002 auto-finish: {auto_gate.reason}"
+                    state.phase = "FINISH"
+                    break
+                state.add_ledger(f"Auto-finish gate not ready: {auto_gate.reason}")
         else:
-            stop_reason = f"max_steps {self.max_steps} reached"
+            stop_reason = f"max_steps {budget.max_steps} reached"
             state.abort_reason = stop_reason
 
         if self.trace:
@@ -185,6 +202,10 @@ class GeminiDirectAgent(BaseAgent):
             "trace": "agent/trace-code",
             "required_outputs": [ro.__dict__ for ro in state.required_outputs],
             "public_checks": [pc.__dict__ for pc in state.public_checks[-6:]],
+            "task_budget": state.task_budget,
+            "task_class": state.task_class,
+            "parse_repair_attempts": state.parse_repair_attempts,
+            "infra_classification": state.infra_classification,
         }
 
     def _choose_phase(self, state: AgentState) -> str:
@@ -196,19 +217,27 @@ class GeminiDirectAgent(BaseAgent):
             return "VERIFY"
         return "ACT"
 
-    async def _dispatch_action(self, environment: BaseEnvironment, step: int, action: AgentAction, state: AgentState) -> str:
+    async def _dispatch_action(self, environment: BaseEnvironment, step: int, action: AgentAction, state: AgentState, budget_timeout_sec: int) -> str:
         state.action_calls += 1
         if action.action == "read_file":
-            return await self._read_file(environment, step, action, state)
+            obs = await self._read_file(environment, step, action, state)
+            self._update_progress_after_action(state, action, obs)
+            return obs
         if action.action == "write_file":
-            return await self._write_file(environment, step, action, state)
+            obs = await self._write_file(environment, step, action, state)
+            self._update_progress_after_action(state, action, obs)
+            return obs
         if action.action == "list_files":
-            return await self._list_files(environment, step, action, state)
+            obs = await self._list_files(environment, step, action, state)
+            self._update_progress_after_action(state, action, obs)
+            return obs
         if action.action == "shell":
             purpose = action.purpose or action.ledger or "shell action"
-            obs = await self._exec(environment, action.command or "true", action.cwd, action.timeout_sec or self.command_timeout_sec, purpose, step=step, state=state)
+            timeout = min(action.timeout_sec or budget_timeout_sec, budget_timeout_sec)
+            obs = await self._exec(environment, action.command or "true", action.cwd, timeout, purpose, step=step, state=state)
             if action.is_public_check or is_public_check_command(action.command or "", purpose):
                 self._record_public_check(state, step, action.command or "", obs)
+            self._update_progress_after_action(state, action, obs)
             return obs
         return f"Unsupported dispatch action: {action.action}"
 
@@ -259,9 +288,43 @@ class GeminiDirectAgent(BaseAgent):
                 sig = state.record_failure(step, stdout, stderr, purpose)
                 if sig and self.trace:
                     self.trace.failure_signature(step, sig.__dict__)
-            else:
-                state.no_progress_count = 0
         return obs
+
+
+    def _update_progress_after_action(self, state: AgentState, action: AgentAction, obs: str) -> None:
+        raw = action.raw or {"action": action.action, "path": action.path, "command": action.command}
+        fp = action_fingerprint(raw)
+        count = state.action_fingerprints.get(fp, 0) + 1 if fp else 0
+        if fp:
+            state.action_fingerprints[fp] = count
+            state.last_action_fingerprint = fp
+        passive = is_passive_action(raw)
+        rc = _extract_exit_code(obs)
+        changed = action.action == "write_file" or (action.action == "shell" and _looks_mutating(action.command or ""))
+        check = action.is_public_check or is_public_check_command(action.command or "", action.purpose or action.ledger or "")
+        if changed or (check and rc == 0):
+            state.no_progress_count = 0
+            state.repeated_passive_actions = 0
+            return
+        if passive and count >= 2:
+            state.repeated_passive_actions += 1
+            state.no_progress_count += 1
+            state.add_ledger(f"No-progress warning: repeated passive action {fp} count={count}")
+        elif rc != 0:
+            state.no_progress_count += 1
+        else:
+            state.no_progress_count = max(0, state.no_progress_count - 1)
+
+    async def _auto_finish_gate(self, environment: BaseEnvironment, state: AgentState, action: AgentAction) -> GateResult | None:
+        if not state.required_outputs:
+            return None
+        latest_check_fresh = bool(state.public_checks and state.public_checks[-1].after_last_mutation and state.public_checks[-1].passed)
+        wrote_required = bool(action.action == "write_file" and action.path in {ro.path for ro in state.required_outputs})
+        if not latest_check_fresh and not wrote_required:
+            return None
+        gate = await self._pre_finish_gate(environment, state, "C002 auto-finish after fresh evidence")
+        return gate
+
 
     def _record_public_check(self, state: AgentState, step: int, command: str, obs: str) -> None:
         exit_code = _extract_exit_code(obs)
@@ -310,6 +373,11 @@ class GeminiDirectAgent(BaseAgent):
         evidence.append("finish gate passed")
         state.add_ledger(f"Finish gate passed: {reason}")
         return GateResult(True, "finish gate passed", stale_verification=False, no_public_check=no_public_check, evidence=evidence)
+
+
+def _looks_mutating(command: str) -> bool:
+    low = command.lower()
+    return any(k in low for k in (" >", ">>", "tee ", "sed -i", "cat >", "touch ", "mkdir ", "cp ", "mv ", "rm ", "base64 -d >", "python - <<", "python3 - <<"))
 
 
 def _user_part(text: str) -> dict[str, Any]:

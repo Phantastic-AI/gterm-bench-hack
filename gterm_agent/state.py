@@ -19,8 +19,8 @@ Phase = Literal[
     "ABORT",
 ]
 
-CANDIDATE_ID = "C001_ledger_verify"
-AGENT_VERSION = "0.1.0-c001"
+CANDIDATE_ID = "C002_budgeted_repair"
+AGENT_VERSION = "0.2.0-c002"
 MAX_PROMPT_TOKENS_BEFORE_COMPACT = 80_000
 PROMPT_CHAR_BUDGET = MAX_PROMPT_TOKENS_BEFORE_COMPACT * 4
 
@@ -51,6 +51,17 @@ class FailureSignature:
     first_step: int = 0
     last_step: int = 0
     hypothesis: str = ""
+
+
+@dataclass
+class TaskBudget:
+    task_class: str
+    max_steps: int
+    max_wall_time_sec: int
+    max_shell_calls: int
+    no_progress_budget: int
+    command_timeout_sec: int
+    rationale: str = ""
 
 
 @dataclass
@@ -119,6 +130,13 @@ class AgentState:
     parse_errors: int = 0
     no_progress_count: int = 0
     abort_reason: str = ""
+    task_class: str = "unknown"
+    task_budget: dict[str, Any] = field(default_factory=dict)
+    action_fingerprints: dict[str, int] = field(default_factory=dict)
+    last_action_fingerprint: str = ""
+    repeated_passive_actions: int = 0
+    parse_repair_attempts: int = 0
+    infra_classification: str = ""
 
     def elapsed_sec(self) -> int:
         return int(time.monotonic() - self.started_monotonic)
@@ -163,6 +181,31 @@ class AgentState:
         return d
 
 
+def classify_task_budget(instruction: str, requested_max_steps: int, requested_wall_time_sec: int, requested_shell_calls: int, requested_timeout_sec: int) -> TaskBudget:
+    """Pick a conservative per-task budget from visible task instructions only."""
+    text = instruction.lower()
+    has_browser = any(k in text for k in ("selenium", "browser", "chrome", "xss", "html", "javascript", "alert", "iframe"))
+    has_code = any(k in text for k in ("fix", "bug", "test", "pytest", "npm", "compile", "build", "implement", "function", "script", "async"))
+    has_simple_output = any(k in text for k in ("write", "create", "save", "output", "put", "store")) and bool(_APP_PATH_RE.search(instruction) or _PATH_RE.search(instruction))
+    if has_browser:
+        cls, steps, wall, shells, no_prog, timeout, why = "browser_security", 34, 540, 70, 4, 120, "browser/security tasks need exploration but must not wander to 60 steps"
+    elif has_simple_output and not has_code:
+        cls, steps, wall, shells, no_prog, timeout, why = "simple_file", 18, 300, 36, 3, 60, "simple file-output task should finish after output plus fresh check"
+    elif has_code:
+        cls, steps, wall, shells, no_prog, timeout, why = "code_debug", 30, 480, 64, 4, 120, "code/debug task gets moderate repair budget"
+    else:
+        cls, steps, wall, shells, no_prog, timeout, why = "unknown", 26, 420, 54, 3, 90, "unknown task gets bounded diagnostic budget"
+    return TaskBudget(
+        task_class=cls,
+        max_steps=min(int(requested_max_steps), steps),
+        max_wall_time_sec=min(int(requested_wall_time_sec), wall),
+        max_shell_calls=min(int(requested_shell_calls), shells),
+        no_progress_budget=no_prog,
+        command_timeout_sec=min(int(requested_timeout_sec), timeout),
+        rationale=why,
+    )
+
+
 def compact_text(text: str, max_chars: int) -> str:
     text = text or ""
     if len(text) <= max_chars:
@@ -170,6 +213,31 @@ def compact_text(text: str, max_chars: int) -> str:
     head = max_chars // 2
     tail = max_chars - head
     return text[:head] + f"\n...[compact {len(text) - max_chars} chars]...\n" + text[-tail:]
+
+
+def action_fingerprint(action: dict[str, Any] | None) -> str:
+    if not action:
+        return ""
+    name = str(action.get("action") or "")
+    if name in {"read_file", "write_file", "list_files"}:
+        return f"{name}:{action.get('path') or ''}"
+    if name == "shell":
+        cmd = re.sub(r"\s+", " ", str(action.get("command") or "")).strip()
+        return f"shell:{cmd[:220]}"
+    return name
+
+
+def is_passive_action(action: dict[str, Any] | None) -> bool:
+    if not action:
+        return False
+    name = str(action.get("action") or "")
+    if name in {"read_file", "list_files"}:
+        return True
+    if name != "shell":
+        return False
+    cmd = str(action.get("command") or "").strip().lower()
+    mutators = (" >", ">>", "tee ", "sed -i", "python - <<", "python3 - <<", "cat >", "touch ", "mkdir ", "cp ", "mv ", "rm ", "npm install", "pip install", "apt ")
+    return not any(m in cmd for m in mutators)
 
 
 def normalize_failure(stdout: str = "", stderr: str = "") -> str:
@@ -184,6 +252,15 @@ def normalize_failure(stdout: str = "", stderr: str = "") -> str:
     return hashlib.sha1(text.encode("utf-8", errors="ignore")).hexdigest()[:12]
 
 
+def classify_infra_failure_text(text: str) -> str:
+    low = text.lower()
+    if "/tests/test.sh" in low and "no such file" in low:
+        return "infra_verifier_staging_missing_tests"
+    if "rewardfilenotfounderror" in low:
+        return "infra_reward_file_missing"
+    return ""
+
+
 _PATH_RE = re.compile(r"(?P<path>(?:/app/|\./)?[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*\.[A-Za-z0-9_.-]+)")
 _APP_PATH_RE = re.compile(r"(?P<path>/app/[A-Za-z0-9_./-]+)")
 
@@ -191,13 +268,14 @@ _APP_PATH_RE = re.compile(r"(?P<path>/app/[A-Za-z0-9_./-]+)")
 def extract_required_outputs(instruction: str) -> list[RequiredOutput]:
     outputs: list[RequiredOutput] = []
     seen: set[str] = set()
-    lines = instruction.splitlines()
-    for line in lines:
+    output_intents = ("save", "write", "create", "output", "store", "put", "place", "submit", "final", "result", "named", "called", "file should", "fix", "modify", "edit")
+    negative_context = ("provided", "already", "reference", "read ", "inspect ", "test file", "tests are", "verify with")
+    for line in instruction.splitlines():
         low = line.lower()
-        intent = any(word in low for word in ("save", "write", "create", "output", "store", "put", "place"))
-        patterns = [_APP_PATH_RE]
-        if intent:
-            patterns.append(_PATH_RE)
+        intent = any(word in low for word in output_intents)
+        if not intent:
+            continue
+        patterns = [_APP_PATH_RE, _PATH_RE]
         for pattern in patterns:
             for match in pattern.finditer(line):
                 path = match.group("path").strip("'\"`.,:;)")
@@ -205,7 +283,16 @@ def extract_required_outputs(instruction: str) -> list[RequiredOutput]:
                     continue
                 if not path.startswith("/app/"):
                     path = "/app/" + path.lstrip("./")
+                base = path.rsplit("/", 1)[-1].lower()
                 if any(bad in path for bad in ("/verifier", "/.git", "/logs/")):
+                    continue
+                # Common benchmark helper/test files are visible evidence, not deliverables,
+                # unless the instruction explicitly asks to edit/fix/modify them.
+                if base.startswith("test_") or base in {"test_outputs.py", "tests.py"}:
+                    continue
+                if base in {"filter.py"} and not any(w in low for w in ("fix", "modify", "edit", "write")):
+                    continue
+                if any(ctx in low for ctx in negative_context) and not any(w in low for w in ("fix", "modify", "edit", "write", "create", "save", "output")):
                     continue
                 if path not in seen:
                     seen.add(path)

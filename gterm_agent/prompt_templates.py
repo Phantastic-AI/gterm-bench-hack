@@ -60,7 +60,7 @@ def render_turn_context(
 
 RUNTIME_STATE:
 state={json.dumps(context, ensure_ascii=False, indent=2)}
-goal_mode=C001_ledger_verify with runtime-enforced finish gate
+goal_mode=C002_budgeted_repair with runtime-enforced finish gate and budgeted repair
 remaining_actions={remaining_actions}
 remaining_shell_calls={remaining_shell}
 remaining_time_sec={remaining_time}
@@ -86,7 +86,7 @@ FRESHNESS_REQUIREMENTS:
 """
     if forced_message:
         text += f"RUNTIME_GATE_MESSAGE:\n{forced_message}\n\n"
-    text += "NEXT_RESPONSE:\nReturn exactly one JSON action object. No markdown. No prose outside JSON."
+    text += "NEXT_RESPONSE:\nReturn exactly one JSON action object. No markdown. No prose outside JSON. Escape literal newlines inside JSON strings."
     if len(text) > PROMPT_CHAR_BUDGET:
         # Last-ditch deterministic compaction. Normal prompts should be far smaller.
         text = compact_text(text, PROMPT_CHAR_BUDGET)

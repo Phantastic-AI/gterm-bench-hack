@@ -96,18 +96,103 @@ def validate_command(command: str) -> None:
 
 
 def _json_from_text(text: str) -> dict[str, Any]:
-    text = text.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"\s*```$", "", text)
-    try:
-        obj = json.loads(text)
-    except json.JSONDecodeError:
-        start = text.find("{")
-        if start == -1:
-            raise
-        decoder = json.JSONDecoder()
-        obj, _end = decoder.raw_decode(text[start:])
-    if not isinstance(obj, dict):
-        raise ValueError("Gemini action JSON must be an object")
-    return obj
+    variants: list[str] = []
+    raw = text.strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+    variants.append(raw)
+    extracted = _extract_balanced_object(raw)
+    if extracted and extracted not in variants:
+        variants.append(extracted)
+    sanitized = _escape_control_chars_in_strings(extracted or raw)
+    if sanitized not in variants:
+        variants.append(sanitized)
+    stripped = _strip_bad_control_chars(extracted or raw)
+    if stripped not in variants:
+        variants.append(stripped)
+
+    errors: list[str] = []
+    for candidate in variants:
+        try:
+            obj = json.loads(candidate)
+        except json.JSONDecodeError as e:
+            try:
+                start = candidate.find("{")
+                if start == -1:
+                    raise
+                decoder = json.JSONDecoder()
+                obj, _end = decoder.raw_decode(candidate[start:])
+            except Exception as inner:  # noqa: BLE001
+                errors.append(str(inner or e))
+                continue
+        if not isinstance(obj, dict):
+            raise ValueError("Gemini action JSON must be an object")
+        return obj
+    raise ValueError("Unable to parse action JSON after repair attempts: " + "; ".join(errors[-3:]))
+
+
+def _extract_balanced_object(text: str) -> str:
+    start = text.find("{")
+    if start == -1:
+        return ""
+    depth = 0
+    in_string = False
+    escape = False
+    for i, ch in enumerate(text[start:], start=start):
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return text[start:]
+
+
+def _strip_bad_control_chars(text: str) -> str:
+    return "".join(ch for ch in text if ch in "\t\n\r" or ord(ch) >= 32)
+
+
+def _escape_control_chars_in_strings(text: str) -> str:
+    out: list[str] = []
+    in_string = False
+    escape = False
+    for ch in text:
+        if in_string:
+            if escape:
+                out.append(ch)
+                escape = False
+                continue
+            if ch == "\\":
+                out.append(ch)
+                escape = True
+                continue
+            if ch == '"':
+                out.append(ch)
+                in_string = False
+                continue
+            if ch == "\n":
+                out.append("\\n")
+            elif ch == "\r":
+                out.append("\\r")
+            elif ch == "\t":
+                out.append("\\t")
+            elif ord(ch) < 32:
+                out.append(f"\\u{ord(ch):04x}")
+            else:
+                out.append(ch)
+            continue
+        if ch == '"':
+            in_string = True
+        out.append(ch)
+    return "".join(out)

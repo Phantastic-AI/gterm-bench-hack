@@ -1,0 +1,17 @@
+id: C002_budgeted_repair
+name: Budgeted repair direct Gemini harness
+model: google/gemini-3.5-flash
+base: C001_ledger_verify
+status: experimental
+features:
+  - preserves C001 persisted system prompt, AgentState, rolling ledger, pre-finish gate, ATIF trace-code artifacts
+  - repaired action JSON extraction with control-character/newline sanitation and capped reprompts
+  - task-class budget profiles: simple_file, code_debug, browser_security, unknown
+  - faster auto-finish when required outputs and fresh evidence satisfy the runtime gate
+  - repeated passive-action/no-progress accounting
+  - summarize-time infra classification for verifier staging failures
+run_hygiene:
+  jobs_dir_shape: ../runs/c002-10-<timestamp>
+  job_name: job
+  n_concurrent: 1
+  delete_mode: --no-delete

@@ -5,6 +5,11 @@ import argparse
 import json
 from pathlib import Path
 
+INFRA_SIGNATURES = (
+    ("/tests/test.sh", "No such file or directory", "infra_verifier_staging_missing_tests"),
+    ("RewardFileNotFoundError", "", "infra_reward_file_missing"),
+)
+
 
 def read_json(path: Path) -> dict:
     return json.loads(path.read_text()) if path.exists() else {}
@@ -30,6 +35,7 @@ def main() -> int:
         meta = (tr.get("agent_result") or {}).get("metadata") or {}
         required = meta.get("required_outputs") or []
         checks = meta.get("public_checks") or []
+        infra = classify_infra(trial)
         artifacts = {
             "result": (trial / "result.json").exists(),
             "trace": (trial / "agent/pi-style-trace.jsonl").exists(),
@@ -39,9 +45,24 @@ def main() -> int:
         }
         print(f"trial: {trial.name}")
         print(f"  reward={reward} status={meta.get('status')} stop={meta.get('stop_reason')}")
+        if infra:
+            print(f"  infra_classification={infra}")
         print(f"  required_outputs={required}")
         print(f"  public_checks={len(checks)} artifacts={artifacts}")
     return 0
+
+
+def classify_infra(trial: Path) -> str:
+    texts = []
+    for rel in ["verifier/test-stdout.txt", "exception.txt", "result.json"]:
+        path = trial / rel
+        if path.exists():
+            texts.append(path.read_text(errors="replace")[:20000])
+    blob = "\n".join(texts)
+    for a, b, label in INFRA_SIGNATURES:
+        if a in blob and (not b or b in blob):
+            return label
+    return ""
 
 
 if __name__ == "__main__":
