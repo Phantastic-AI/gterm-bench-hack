@@ -47,3 +47,15 @@ submissions/terminal-bench/2.0/<agent>__<model>/
 ```
 
 Final target/version will be confirmed before submission.
+
+## Current research docs
+
+- [Custom Harness Plan](docs/custom-harness-plan.md)
+- [Research Synthesis](docs/research-synthesis.md)
+- [Trace-as-Code Methodology](docs/trace-as-code-methodology.md)
+- [Ralph / oh-my-codex Lessons](docs/omx-ralph-lessons.md)
+- [Oracle Master Plan](docs/oracle-master-plan.md)
+- [Runner Strategy](docs/runner-strategy.md)
+- [Appzilla Runbook](docs/appzilla-runbook.md)
+- [Submission Notes](docs/submission.md)
+
