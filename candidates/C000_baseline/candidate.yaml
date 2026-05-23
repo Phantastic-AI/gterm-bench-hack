@@ -1,0 +1,10 @@
+id: C000_baseline
+name: Direct Gemini shell loop
+model: gemini-3.5-flash
+status: implementation
+principles:
+  - direct Gemini API, no gemini-cli
+  - shell/finish/abort JSON action protocol
+  - host-side API key only
+  - Pi-style JSONL trace plus dehydrated trace-code bundle
+  - no optimization until n=1 produces valid artifacts

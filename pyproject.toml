@@ -1,0 +1,9 @@
+[project]
+name = "gterm-bench-hack"
+version = "0.1.0"
+description = "Direct Gemini Terminal-Bench harness experiments"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
