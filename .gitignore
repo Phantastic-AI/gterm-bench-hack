@@ -1,0 +1,10 @@
+.env
+*.env
+secrets.env
+runs/
+cache/
+tmp/
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
