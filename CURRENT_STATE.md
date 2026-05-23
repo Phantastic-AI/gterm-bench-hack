@@ -16,7 +16,7 @@ Last updated: 2026-05-23.
 | C000 | Codex-built baseline direct Gemini harness | Ran smoke/panel | Useful baseline |
 | C001 | Codex-built ledger/verify/trace harness | Ran diagnostics; exposed Harbor verifier staging issue | Partially useful |
 | C002 | Codex-built budgeted repair harness | Ran canonical 10-task panel | Last trustworthy benchmark snapshot |
-| C003 | Codex-built adaptive-thinking candidate | Implemented; needs fresh smoke before any final claim | Not final yet |
+| C003 | Codex-built adaptive-thinking candidate | n=1 regex-log smoke failed after correct simple_file classification | Not final; do not run n=10 yet |
 | G003 | Gemini 3.5 Flash-generated meta-optimizer proposal | Proposal artifact only; not integrated/run | Research artifact |
 
 ## Important boundary
@@ -27,6 +27,6 @@ G003 is the Gemini-authored meta-optimizer output. It produced a proposal only. 
 
 ## Current safe next step
 
-Validate C003 with a single `terminal-bench/regex-log` smoke after the classifier fix that keeps regex output tasks in `simple_file`.
+Build a tiny follow-up candidate that prevents simple-file tasks from wasting budget on interpreter discovery before writing the required output file, then rerun `terminal-bench/regex-log` n=1.
 
 Do not run a larger panel until the n=1 smoke passes.
