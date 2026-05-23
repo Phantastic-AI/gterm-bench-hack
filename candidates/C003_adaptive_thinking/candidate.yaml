@@ -1,0 +1,18 @@
+id: C003_adaptive_thinking
+name: Adaptive thinking with stricter finish policy
+model: google/gemini-3.5-flash
+base: C002_budgeted_repair
+status: experimental
+features:
+  - preserves C001/C002 direct Gemini API, AgentState, ledger, gate, ATIF trace-code artifacts
+  - uses Gemini 3 thinkingLevel instead of fixed thinkingBudget
+  - simple_file tasks use medium thinking; code/data/browser/binary/unknown use high thinking
+  - escalates to high after parse repair, gate rejection, no-progress, or failure signatures
+  - requires meaningful behavioral public checks before finishing non-simple tasks
+  - adds data_query and binary_reverse task budget classes
+  - tighter required-output filtering for false positives such as e.g.
+run_hygiene:
+  n1: ../runs/c003-n1-<timestamp>/job
+  n10: ../runs/c003-10-<timestamp>/job
+  n_concurrent: 1
+  delete_mode: --no-delete

@@ -19,8 +19,8 @@ Phase = Literal[
     "ABORT",
 ]
 
-CANDIDATE_ID = "C002_budgeted_repair"
-AGENT_VERSION = "0.2.0-c002"
+CANDIDATE_ID = "C003_adaptive_thinking"
+AGENT_VERSION = "0.3.0-c003"
 MAX_PROMPT_TOKENS_BEFORE_COMPACT = 80_000
 PROMPT_CHAR_BUDGET = MAX_PROMPT_TOKENS_BEFORE_COMPACT * 4
 
@@ -184,17 +184,23 @@ class AgentState:
 def classify_task_budget(instruction: str, requested_max_steps: int, requested_wall_time_sec: int, requested_shell_calls: int, requested_timeout_sec: int) -> TaskBudget:
     """Pick a conservative per-task budget from visible task instructions only."""
     text = instruction.lower()
+    has_data_query = any(k in text for k in ("sql", "sqlite", "query", "cte", "window function", "database", "sol.sql", "my-sql-query"))
     has_browser = any(k in text for k in ("selenium", "browser", "chrome", "xss", "html", "javascript", "alert", "iframe"))
+    has_binary = any(k in text for k in ("elf", "binary", "reverse engineer", "disassemble", "objdump", "readelf"))
     has_code = any(k in text for k in ("fix", "bug", "test", "pytest", "npm", "compile", "build", "implement", "function", "script", "async"))
     has_simple_output = any(k in text for k in ("write", "create", "save", "output", "put", "store")) and bool(_APP_PATH_RE.search(instruction) or _PATH_RE.search(instruction))
-    if has_browser:
-        cls, steps, wall, shells, no_prog, timeout, why = "browser_security", 34, 540, 70, 4, 120, "browser/security tasks need exploration but must not wander to 60 steps"
+    if has_data_query:
+        cls, steps, wall, shells, no_prog, timeout, why = "data_query", 34, 540, 56, 4, 120, "SQL/data tasks need high reasoning but bounded shell loops"
+    elif has_browser:
+        cls, steps, wall, shells, no_prog, timeout, why = "browser_security", 32, 480, 60, 4, 120, "browser/security tasks require verifier-like checks before finish"
+    elif has_binary:
+        cls, steps, wall, shells, no_prog, timeout, why = "binary_reverse", 32, 480, 58, 4, 120, "binary/reverse tasks need high reasoning and conservative output extraction"
     elif has_simple_output and not has_code:
-        cls, steps, wall, shells, no_prog, timeout, why = "simple_file", 18, 300, 36, 3, 60, "simple file-output task should finish after output plus fresh check"
+        cls, steps, wall, shells, no_prog, timeout, why = "simple_file", 18, 300, 34, 3, 60, "simple file-output task should finish after output plus fresh check"
     elif has_code:
-        cls, steps, wall, shells, no_prog, timeout, why = "code_debug", 30, 480, 64, 4, 120, "code/debug task gets moderate repair budget"
+        cls, steps, wall, shells, no_prog, timeout, why = "code_debug", 30, 480, 56, 4, 120, "code/debug task must pass a behavioral check before finish"
     else:
-        cls, steps, wall, shells, no_prog, timeout, why = "unknown", 26, 420, 54, 3, 90, "unknown task gets bounded diagnostic budget"
+        cls, steps, wall, shells, no_prog, timeout, why = "unknown", 28, 420, 50, 3, 90, "unknown task gets high-reasoning bounded diagnostic budget"
     return TaskBudget(
         task_class=cls,
         max_steps=min(int(requested_max_steps), steps),
@@ -268,7 +274,7 @@ _APP_PATH_RE = re.compile(r"(?P<path>/app/[A-Za-z0-9_./-]+)")
 def extract_required_outputs(instruction: str) -> list[RequiredOutput]:
     outputs: list[RequiredOutput] = []
     seen: set[str] = set()
-    output_intents = ("save", "write", "create", "output", "store", "put", "place", "submit", "final", "result", "named", "called", "file should", "fix", "modify", "edit")
+    output_intents = ("save", "write", "create", "output", "store", "put", "place", "submit", "final", "result", "named", "called", "file should", "fix", "modify", "edit", "craft", "payload", "bypass", "break")
     negative_context = ("provided", "already", "reference", "read ", "inspect ", "test file", "tests are", "verify with")
     for line in instruction.splitlines():
         low = line.lower()
@@ -281,9 +287,14 @@ def extract_required_outputs(instruction: str) -> list[RequiredOutput]:
                 path = match.group("path").strip("'\"`.,:;)")
                 if not path:
                     continue
+                base_raw = path.rsplit("/", 1)[-1].lower().strip()
+                if base_raw in {"e.g", "i.e", "etc.", "example.com"}:
+                    continue
                 if not path.startswith("/app/"):
                     path = "/app/" + path.lstrip("./")
                 base = path.rsplit("/", 1)[-1].lower()
+                if base in {"e.g", "i.e", "etc."}:
+                    continue
                 if any(bad in path for bad in ("/verifier", "/.git", "/logs/")):
                     continue
                 # Common benchmark helper/test files are visible evidence, not deliverables,
@@ -292,7 +303,7 @@ def extract_required_outputs(instruction: str) -> list[RequiredOutput]:
                     continue
                 if base in {"filter.py"} and not any(w in low for w in ("fix", "modify", "edit", "write")):
                     continue
-                if any(ctx in low for ctx in negative_context) and not any(w in low for w in ("fix", "modify", "edit", "write", "create", "save", "output")):
+                if any(ctx in low for ctx in negative_context) and not any(w in low for w in ("fix", "modify", "edit", "write", "create", "save", "output", "craft", "payload", "bypass", "break")):
                     continue
                 if path not in seen:
                     seen.add(path)

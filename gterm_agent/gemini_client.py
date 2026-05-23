@@ -31,14 +31,23 @@ class GeminiClient:
     def endpoint(self) -> str:
         return f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
 
-    def generate(self, contents: list[dict[str, Any]], *, temperature: float = 0.2, max_output_tokens: int = 8192, retries: int = 3, system_prompt: str | None = None) -> GeminiResponse:
+    def generate(self, contents: list[dict[str, Any]], *, temperature: float = 0.2, max_output_tokens: int = 8192, retries: int = 3, system_prompt: str | None = None, thinking_level: str | None = None) -> GeminiResponse:
+        level = (thinking_level or os.environ.get("GTERM_THINKING_LEVEL") or "high").lower()
+        if level not in {"minimal", "low", "medium", "high"}:
+            level = "high"
+        thinking_config: dict[str, Any]
+        if self.model.startswith("gemini-3"):
+            thinking_config = {"thinkingLevel": level}
+        else:
+            budget = int(os.environ.get("GTERM_THINKING_BUDGET", "512"))
+            thinking_config = {"thinkingBudget": budget}
         payload = {
             "contents": contents,
             "generationConfig": {
                 "temperature": temperature,
                 "maxOutputTokens": max_output_tokens,
                 "responseMimeType": "application/json",
-                "thinkingConfig": {"thinkingBudget": int(os.environ.get("GTERM_THINKING_BUDGET", "512"))},
+                "thinkingConfig": thinking_config,
             },
         }
         if system_prompt:
@@ -61,7 +70,7 @@ class GeminiClient:
                     raw = json.loads(resp.read().decode("utf-8"))
                 latency_ms = int((time.monotonic() - started) * 1000)
                 text = _extract_text(raw)
-                usage = raw.get("usageMetadata") or {}
+                usage = {**(raw.get("usageMetadata") or {}), "thinkingLevel": level}
                 if raw.get("candidates"):
                     usage = {**usage, "finishReason": raw["candidates"][0].get("finishReason")}
                 return GeminiResponse(text=text, usage=usage, raw=raw, latency_ms=latency_ms)

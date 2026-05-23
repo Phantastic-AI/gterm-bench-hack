@@ -31,7 +31,7 @@ class TraceWriter:
         self.total_completion_tokens = 0
         self.replay_commands: list[tuple[str, str]] = []
         self.status = "running"
-        self.agent_version = {"C000_baseline": "0.1.0-c000", "C001_ledger_verify": "0.1.0-c001", "C002_budgeted_repair": "0.2.0-c002"}.get(candidate_id, "0.0.0-unknown")
+        self.agent_version = {"C000_baseline": "0.1.0-c000", "C001_ledger_verify": "0.1.0-c001", "C002_budgeted_repair": "0.2.0-c002", "C003_adaptive_thinking": "0.3.0-c003"}.get(candidate_id, "0.0.0-unknown")
         self.started_at = utc_now()
         self.log_path = self.logs_dir / "pi-style-trace.jsonl"
 

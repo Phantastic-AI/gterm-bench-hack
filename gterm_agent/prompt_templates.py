@@ -60,7 +60,7 @@ def render_turn_context(
 
 RUNTIME_STATE:
 state={json.dumps(context, ensure_ascii=False, indent=2)}
-goal_mode=C002_budgeted_repair with runtime-enforced finish gate and budgeted repair
+goal_mode=C003_adaptive_thinking with runtime-enforced finish gate, adaptive thinking, and stricter behavioral checks
 remaining_actions={remaining_actions}
 remaining_shell_calls={remaining_shell}
 remaining_time_sec={remaining_time}

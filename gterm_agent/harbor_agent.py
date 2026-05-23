@@ -51,7 +51,7 @@ class GeminiDirectAgent(BaseAgent):
         model = self.model_name or "google/gemini-3.5-flash"
         self.gemini_model = model.split("/", 1)[1] if model.startswith("google/") else model
         self.trace: TraceWriter | None = None
-        self.system_prompt = load_system_prompt() + "\n\nC002 runtime addendum: recover from malformed action JSON, obey task-class budgets, avoid repeated passive reads, and finish immediately when required outputs plus fresh public/self-check evidence satisfy the runtime gate."
+        self.system_prompt = load_system_prompt() + "\n\nC003 runtime addendum: use adaptive Gemini 3 thinkingLevel policy, preserve C001/C002 trace/gate behavior, require behavioral public checks before finishing code/data/browser tasks, and keep required-output extraction conservative."
 
     @staticmethod
     def name() -> str:
@@ -73,7 +73,7 @@ class GeminiDirectAgent(BaseAgent):
         state.task_class = budget.task_class
         state.task_budget = budget.__dict__.copy()
         state.required_outputs = extract_required_outputs(instruction)
-        state.add_ledger(f"Initialized C002 {budget.task_class} budget: steps={budget.max_steps}, shell={budget.max_shell_calls}, wall={budget.max_wall_time_sec}s, outputs={len(state.required_outputs)}.")
+        state.add_ledger(f"Initialized C003 {budget.task_class} budget: steps={budget.max_steps}, shell={budget.max_shell_calls}, wall={budget.max_wall_time_sec}s, outputs={len(state.required_outputs)}.")
         self.trace = TraceWriter(self.logs_dir, candidate_id=CANDIDATE_ID, model=self.gemini_model, run_id=environment.session_id)
         self.trace.write_task(instruction)
         client = GeminiClient(model=self.gemini_model)
@@ -124,7 +124,9 @@ class GeminiDirectAgent(BaseAgent):
             forced_message = None
 
             try:
-                resp = client.generate([_user_part(prompt)], temperature=0.1, max_output_tokens=8192, system_prompt=self.system_prompt)
+                thinking_level = self._choose_thinking_level(state)
+                resp = client.generate([_user_part(prompt)], temperature=0.1, max_output_tokens=8192, system_prompt=self.system_prompt, thinking_level=thinking_level)
+                state.add_recent({"step": step, "action": "model", "thinking_level": thinking_level}, max_items=8)
                 state.model_calls += 1
                 if self.trace:
                     self.trace.model_step(step, prompt, resp.text, resp.usage, resp.latency_ms)
@@ -141,7 +143,7 @@ class GeminiDirectAgent(BaseAgent):
                     state.abort_reason = stop_reason
                     break
                 state.parse_repair_attempts += 1
-                forced_message = f"Your last response was invalid but C002 will recover if you comply: {redact_text(err)}. Return exactly one JSON object using the action protocol. Escape newlines inside JSON strings as \n; no markdown."
+                forced_message = f"Your last response was invalid but C003 will recover if you comply: {redact_text(err)}. Return exactly one JSON object using the action protocol. Escape newlines inside JSON strings as \n; no markdown."
                 last_action_result = forced_message
                 continue
 
@@ -157,7 +159,7 @@ class GeminiDirectAgent(BaseAgent):
                     self.trace.critic_gate(step, gate.to_dict())
                 if gate.ok:
                     status = "finish"
-                    stop_reason = action.message or action.reason or "C002 pre-finish gate passed"
+                    stop_reason = action.message or action.reason or "C003 pre-finish gate passed"
                     state.phase = "FINISH"
                     break
                 state.phase = "REPAIR"
@@ -183,7 +185,7 @@ class GeminiDirectAgent(BaseAgent):
                     self.trace.critic_gate(step, auto_gate.to_dict())
                 if auto_gate.ok:
                     status = "finish"
-                    stop_reason = f"C002 auto-finish: {auto_gate.reason}"
+                    stop_reason = f"C003 auto-finish: {auto_gate.reason}"
                     state.phase = "FINISH"
                     break
                 state.add_ledger(f"Auto-finish gate not ready: {auto_gate.reason}")
@@ -207,6 +209,15 @@ class GeminiDirectAgent(BaseAgent):
             "parse_repair_attempts": state.parse_repair_attempts,
             "infra_classification": state.infra_classification,
         }
+
+
+    def _choose_thinking_level(self, state: AgentState) -> str:
+        if state.parse_errors or state.repair_hypotheses or state.no_progress_count or state.failure_signatures:
+            return "high"
+        if state.task_class == "simple_file":
+            return "medium"
+        return "high"
+
 
     def _choose_phase(self, state: AgentState) -> str:
         if state.step == 1:
@@ -318,12 +329,35 @@ class GeminiDirectAgent(BaseAgent):
     async def _auto_finish_gate(self, environment: BaseEnvironment, state: AgentState, action: AgentAction) -> GateResult | None:
         if not state.required_outputs:
             return None
-        latest_check_fresh = bool(state.public_checks and state.public_checks[-1].after_last_mutation and state.public_checks[-1].passed)
+        latest_check = state.public_checks[-1] if state.public_checks else None
+        latest_check_fresh = bool(latest_check and latest_check.after_last_mutation and latest_check.passed)
         wrote_required = bool(action.action == "write_file" and action.path in {ro.path for ro in state.required_outputs})
-        if not latest_check_fresh and not wrote_required:
-            return None
-        gate = await self._pre_finish_gate(environment, state, "C002 auto-finish after fresh evidence")
+        if state.task_class == "simple_file":
+            if not latest_check_fresh and not wrote_required:
+                return None
+        else:
+            # C003: code/data/browser/binary tasks must have a real behavioral check,
+            # not just an existing output file.
+            if not latest_check_fresh:
+                return None
+            if state.task_class in {"code_debug", "data_query", "browser_security", "binary_reverse"} and not self._public_check_is_meaningful(state, latest_check.command if latest_check else ""):
+                return GateResult(False, f"{state.task_class} requires a meaningful behavioral public check before auto-finish")
+        gate = await self._pre_finish_gate(environment, state, "C003 auto-finish after fresh evidence")
         return gate
+
+    def _public_check_is_meaningful(self, state: AgentState, command: str) -> bool:
+        cmd = command.lower()
+        if state.task_class == "simple_file":
+            return True
+        if state.task_class == "data_query":
+            return any(k in cmd for k in ("sol.sql", "my-sql-query.sql", "golden", "sqlite3", "pytest", "test_outputs.py"))
+        if state.task_class == "browser_security":
+            return any(k in cmd for k in ("test_outputs.py", "pytest", "selenium", "chrome", "chromium", "alert", "playwright"))
+        if state.task_class == "binary_reverse":
+            return any(k in cmd for k in ("test_outputs.py", "pytest", "readelf", "objdump", "file ", "./"))
+        if state.task_class == "code_debug":
+            return any(k in cmd for k in ("test_outputs.py", "pytest", "npm test", "yarn test", "pnpm test", "python -m", "python3 -m", "./test", "go test", "cargo test", "make test"))
+        return any(k in cmd for k in ("test", "pytest", "check", "verify"))
 
 
     def _record_public_check(self, state: AgentState, step: int, command: str, obs: str) -> None:
@@ -366,6 +400,12 @@ class GeminiDirectAgent(BaseAgent):
             return GateResult(False, "required output path(s) missing", missing_outputs=missing, stale_verification=stale_verification, no_public_check=no_public_check, evidence=evidence)
         if state.denied_actions:
             return GateResult(False, "denied unsafe/invalid action occurred", stale_verification=stale_verification, no_public_check=no_public_check, evidence=evidence)
+        if state.task_class != "simple_file":
+            latest_check = state.public_checks[-1] if state.public_checks else None
+            if not latest_check or not latest_check.passed or not latest_check.after_last_mutation:
+                return GateResult(False, f"{state.task_class} requires a fresh passing public/self-check", stale_verification=stale_verification, no_public_check=no_public_check, evidence=evidence)
+            if not self._public_check_is_meaningful(state, latest_check.command):
+                return GateResult(False, f"{state.task_class} public/self-check is not behavioral enough", stale_verification=stale_verification, no_public_check=no_public_check, evidence=evidence)
         if no_public_check and not output_check_fresh:
             return GateResult(False, "no fresh public/self-check or required-output evidence", stale_verification=stale_verification, no_public_check=True, evidence=evidence)
         if stale_verification and not output_check_fresh:
