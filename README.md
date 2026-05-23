@@ -59,4 +59,5 @@ Final target/version will be confirmed before submission.
 - [Appzilla Runbook](docs/appzilla-runbook.md)
 - [Submission Notes](docs/submission.md)
 - [C000 Smoke Results](docs/c000-smoke-results.md)
+- [C001 System Prompt](docs/C001_LEDGER_VERIFY_SYSTEM_PROMPT.md)
 
