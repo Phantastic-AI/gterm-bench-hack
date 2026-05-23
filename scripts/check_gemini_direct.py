@@ -17,12 +17,15 @@ def main() -> int:
         raise SystemExit("GEMINI_API_KEY or GOOGLE_API_KEY missing")
     model = args.model.split("/", 1)[-1]
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    payload = json.dumps({"contents":[{"role":"user","parts":[{"text":"Reply with JSON: {\\\"ok\\\":true}"}]}],"generationConfig":{"responseMimeType":"application/json","maxOutputTokens":32}}).encode()
+    payload = json.dumps({"contents":[{"role":"user","parts":[{"text":"Reply with JSON: {\\\"ok\\\":true}"}]}],"generationConfig":{"responseMimeType":"application/json","maxOutputTokens":512}}).encode()
     req = urllib.request.Request(url, data=payload, headers={"Content-Type":"application/json","x-goog-api-key":key}, method="POST")
     t = time.monotonic()
     with urllib.request.urlopen(req, timeout=60) as resp:
         raw = json.loads(resp.read().decode())
-    text = "".join(p.get("text","") for p in raw["candidates"][0]["content"]["parts"])
+    parts = raw["candidates"][0].get("content", {}).get("parts", [])
+    text = "".join(p.get("text","") for p in parts)
+    if not text:
+        raise SystemExit(f"Gemini returned no text; finishReason={raw['candidates'][0].get('finishReason')} usage={raw.get('usageMetadata', {})}")
     print(json.dumps({"model": model, "latency_ms": int((time.monotonic()-t)*1000), "text": text, "usage": raw.get("usageMetadata", {})}, indent=2))
     return 0
 
