@@ -53,7 +53,7 @@ class GeminiDirectAgent(BaseAgent):
         for step in range(1, self.max_steps + 1):
             prompt_text = contents[-1]["parts"][0]["text"]
             try:
-                resp = client.generate(contents, temperature=0.2, max_output_tokens=4096)
+                resp = client.generate(contents, temperature=0.1, max_output_tokens=8192)
                 self.trace.model_step(step, prompt_text, resp.text, resp.usage, resp.latency_ms)
                 action = parse_action(resp.text)
                 consecutive_parse_errors = 0
@@ -126,8 +126,9 @@ Rules:
 - Use shell commands to inspect, edit, build, and run public checks.
 - Do not browse Terminal-Bench websites/repos or seek known answers.
 - Do not print API keys or host env secrets.
+- If the task asks to save a file at an exact path, create that exact file; do not create unrelated test directories unless needed.
 - Before finishing, run the strongest public check you can find and verify requested output paths/formats.
-- Return ONLY JSON. No markdown.
+- Return ONLY one JSON object. No markdown, no commentary, no second object.
 
 JSON actions:
 {{"action":"shell","command":"...","cwd":"/app","timeout_sec":120,"purpose":"..."}}
@@ -140,11 +141,11 @@ Task instruction:
 Initial environment snapshot:
 {bootstrap}
 
-Choose the next single shell action."""
+Choose the next single shell action. Prefer inspecting obvious files/tests first if needed; if the instruction is already sufficient, write the requested output file directly and then verify it."""
 
 
 def _observation_prompt(step: int, obs: str) -> str:
     return f"""Observation from shell step {step}:
 {obs}
 
-Update your plan internally. Return the next single JSON action. If you are confident the task is complete, return finish only after verifying outputs/tests."""
+Update your plan internally. Return exactly one JSON action object. If you are confident the task is complete, return finish only after verifying outputs/tests and exact output paths."""

@@ -64,10 +64,11 @@ def _json_from_text(text: str) -> dict[str, Any]:
     try:
         obj = json.loads(text)
     except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", text, re.S)
-        if not match:
+        start = text.find("{")
+        if start == -1:
             raise
-        obj = json.loads(match.group(0))
+        decoder = json.JSONDecoder()
+        obj, _end = decoder.raw_decode(text[start:])
     if not isinstance(obj, dict):
         raise ValueError("Gemini action JSON must be an object")
     return obj

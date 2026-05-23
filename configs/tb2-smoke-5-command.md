@@ -10,7 +10,7 @@ export PATH=/srv/appzilla/tbench-gemini-flash/bin:$PATH
 export PYTHONPATH=$PWD
 job="c000-n5-$(date -u +%Y%m%dT%H%M%SZ)"
 harbor run -d terminal-bench/terminal-bench-2 \
-  -i regex-log -i cancel-async-tasks -i query-optimize -i build-pmars -i break-filter-js-from-html \
+  -i terminal-bench/regex-log -i terminal-bench/cancel-async-tasks -i terminal-bench/query-optimize -i terminal-bench/build-pmars -i terminal-bench/break-filter-js-from-html \
   --agent-import-path gterm_agent.harbor_agent:GeminiDirectAgent \
   -m google/gemini-3.5-flash \
   --jobs-dir ../runs/c000-n5 \

@@ -31,13 +31,14 @@ class GeminiClient:
     def endpoint(self) -> str:
         return f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
 
-    def generate(self, contents: list[dict[str, Any]], *, temperature: float = 0.2, max_output_tokens: int = 4096, retries: int = 3) -> GeminiResponse:
+    def generate(self, contents: list[dict[str, Any]], *, temperature: float = 0.2, max_output_tokens: int = 8192, retries: int = 3) -> GeminiResponse:
         payload = {
             "contents": contents,
             "generationConfig": {
                 "temperature": temperature,
                 "maxOutputTokens": max_output_tokens,
                 "responseMimeType": "application/json",
+                "thinkingConfig": {"thinkingBudget": int(os.environ.get("GTERM_THINKING_BUDGET", "512"))},
             },
         }
         data = json.dumps(payload).encode("utf-8")
