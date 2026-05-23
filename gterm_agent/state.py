@@ -184,7 +184,7 @@ class AgentState:
 def classify_task_budget(instruction: str, requested_max_steps: int, requested_wall_time_sec: int, requested_shell_calls: int, requested_timeout_sec: int) -> TaskBudget:
     """Pick a conservative per-task budget from visible task instructions only."""
     text = instruction.lower()
-    has_data_query = any(k in text for k in ("sql", "sqlite", "query", "cte", "window function", "database", "sol.sql", "my-sql-query"))
+    has_data_query = any(k in text for k in ("sql", "sqlite", "cte", "window function", "database", "sol.sql", "my-sql-query")) or bool(re.search(r"\bquery\b", text) and re.search(r"\b(optimi[sz]e|sql|database|sqlite)\b", text))
     has_browser = any(k in text for k in ("selenium", "browser", "chrome", "xss", "html", "javascript", "alert", "iframe"))
     has_binary = any(k in text for k in ("elf", "binary", "reverse engineer", "disassemble", "objdump", "readelf"))
     has_code = any(k in text for k in ("fix", "bug", "test", "pytest", "npm", "compile", "build", "implement", "function", "script", "async"))
