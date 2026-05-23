@@ -20,7 +20,7 @@ Phase = Literal[
 ]
 
 CANDIDATE_ID = "C003_adaptive_thinking"
-AGENT_VERSION = "0.3.3-c003-artifact-contract"
+AGENT_VERSION = "0.3.4-c003-artifact-enforced"
 MAX_PROMPT_TOKENS_BEFORE_COMPACT = 80_000
 PROMPT_CHAR_BUDGET = MAX_PROMPT_TOKENS_BEFORE_COMPACT * 4
 

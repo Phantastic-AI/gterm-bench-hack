@@ -149,6 +149,22 @@ class GeminiDirectAgent(BaseAgent):
                 continue
 
             state.last_action = action.raw or {"action": action.action}
+            if self._violates_artifact_contract(state, action):
+                state.artifact_contract_repairs += 1
+                required = ", ".join(ro.path for ro in state.required_outputs)
+                state.add_ledger(f"Artifact action rejected: required output still missing ({required})")
+                if self.trace:
+                    self.trace.model_action(step, action.raw or {"action": action.action})
+                    self.trace.event("artifact_contract_reject", step=step, action=action.raw or {"action": action.action}, required_outputs=required)
+                forced_message = (
+                    "Artifact contract rejection: that action does not create the required output artifact. "
+                    f"The required output path is {required}. Return exactly one JSON action now, and it must be "
+                    "either write_file with path set to that required path, or a shell command that redirects/tees "
+                    "content into that exact path. Do not create helper scripts, list files, test interpreters, or "
+                    "read files before writing the required artifact."
+                )
+                last_action_result = forced_message
+                continue
             state.add_ledger(action.ledger or action.purpose or action.reason or action.message)
             if self.trace:
                 self.trace.model_action(step, action.raw or {"action": action.action})
@@ -254,6 +270,22 @@ class GeminiDirectAgent(BaseAgent):
                 f"{paths}. Create or edit the required artifact now, then verify it exists."
             )
         return None
+
+    def _violates_artifact_contract(self, state: AgentState, action: AgentAction) -> bool:
+        if state.task_class != "simple_file" or not state.required_outputs:
+            return False
+        required = {ro.path for ro in state.required_outputs}
+        missing_required = [ro.path for ro in state.required_outputs if ro.path not in state.touched_files]
+        if not missing_required:
+            return False
+        contract_active = state.artifact_contract_repairs > 0 or state.action_calls >= 2 or state.last_required_output_check_step > 0
+        if not contract_active:
+            return False
+        if action.action == "write_file" and action.path in required:
+            return False
+        if action.action == "shell" and _shell_writes_required(action.command or "", required):
+            return False
+        return action.action not in {"finish", "abort"}
 
     async def _dispatch_action(self, environment: BaseEnvironment, step: int, action: AgentAction, state: AgentState, budget_timeout_sec: int) -> str:
         state.action_calls += 1
@@ -445,6 +477,28 @@ class GeminiDirectAgent(BaseAgent):
 def _looks_mutating(command: str) -> bool:
     low = command.lower()
     return any(k in low for k in (" >", ">>", "tee ", "sed -i", "cat >", "touch ", "mkdir ", "cp ", "mv ", "rm ", "base64 -d >", "python - <<", "python3 - <<"))
+
+
+def _shell_writes_required(command: str, required_paths: set[str]) -> bool:
+    for path in required_paths:
+        q = shlex.quote(path)
+        patterns = (
+            f"> {path}",
+            f">{path}",
+            f">> {path}",
+            f">>{path}",
+            f"tee {path}",
+            f"tee -a {path}",
+            f"cat > {path}",
+            f"cat >{path}",
+            f"> {q}",
+            f">{q}",
+            f"tee {q}",
+            f"cat > {q}",
+        )
+        if any(p in command for p in patterns):
+            return True
+    return False
 
 
 def _user_part(text: str) -> dict[str, Any]:
