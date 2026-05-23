@@ -20,7 +20,7 @@ Phase = Literal[
 ]
 
 CANDIDATE_ID = "C003_adaptive_thinking"
-AGENT_VERSION = "0.3.1-c003-env-prompt"
+AGENT_VERSION = "0.3.2-c003-loose-simple"
 MAX_PROMPT_TOKENS_BEFORE_COMPACT = 80_000
 PROMPT_CHAR_BUDGET = MAX_PROMPT_TOKENS_BEFORE_COMPACT * 4
 
@@ -198,7 +198,7 @@ def classify_task_budget(instruction: str, requested_max_steps: int, requested_w
     elif has_binary:
         cls, steps, wall, shells, no_prog, timeout, why = "binary_reverse", 32, 480, 58, 4, 120, "binary/reverse tasks need high reasoning and conservative output extraction"
     elif has_simple_output and not has_code:
-        cls, steps, wall, shells, no_prog, timeout, why = "simple_file", 18, 300, 34, 3, 60, "simple file-output task should finish after output plus fresh check"
+        cls, steps, wall, shells, no_prog, timeout, why = "simple_file", 18, 300, 34, 10, 60, "simple file-output task gets extra recovery room before no-progress abort"
     elif has_code:
         cls, steps, wall, shells, no_prog, timeout, why = "code_debug", 30, 480, 56, 4, 120, "code/debug task must pass a behavioral check before finish"
     else:
