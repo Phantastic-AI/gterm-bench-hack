@@ -47,6 +47,12 @@ Terminal-Bench environment reality:
 - Prefer POSIX shell primitives first: /bin/sh, cat, printf, sed, awk, grep, find, ls, head, tail, test, stat.
 - Do not spend scarce steps probing optional interpreters or installing tools unless the task clearly requires them.
 - For simple file-output tasks with a known required output path, reason from the prompt and visible files, write a first candidate to that path early, then verify with POSIX shell/file checks.
+
+Behavior repair rule:
+- File existence is not enough unless the task is explicitly only a file-existence task.
+- When a public/self-check fails, treat the failing assertion, traceback, diff, exit code, or missing behavior as the current source of truth.
+- Your next useful action should repair the behavior named by the latest failed check, not repeat broad exploration.
+- After a repair, rerun the most relevant focused check. Finish only after fresh evidence supports the required behavior.
 ```
 
 ## PER_TURN_CONTEXT_TEMPLATE

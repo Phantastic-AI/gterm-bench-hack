@@ -1,0 +1,20 @@
+id: C004_behavior_repair_loop
+name: Behavior repair loop with required-artifact enforcement
+model: google/gemini-3.5-flash
+base: C003_adaptive_thinking
+status: experimental
+features:
+  - preserves C003 required-output artifact contract for simple_file tasks
+  - adds behavior repair prompt rule for failed public/self-checks
+  - records latest failed check digest in AgentState
+  - forces repair-oriented follow-up after failed checks for code/debug, browser/security, binary, and data-query tasks
+  - rejects finish when the latest failed public/self-check has not been followed by a mutation/fresh repair
+  - keeps trace-as-code, ATIF, no-secret hygiene, adaptive Gemini 3 thinkingLevel policy
+run_hygiene:
+  n1: ../runs/c004-n1-<timestamp>/job
+  n10: ../runs/c004-10-<timestamp>/job
+  n_concurrent: 1
+  delete_mode: --no-delete
+notes:
+  - C004 is Codex-authored, not Gemini-meta-optimized.
+  - G003 remains the Gemini-authored proposal artifact and is not automatically integrated here.

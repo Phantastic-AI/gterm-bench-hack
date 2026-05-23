@@ -63,6 +63,7 @@ Final target/version will be confirmed before submission.
 - [C001 System Prompt](docs/C001_LEDGER_VERIFY_SYSTEM_PROMPT.md)
 - [C002 Results](docs/c002-results.md)
 - [C003 Results](docs/c003-results.md)
+- [C004 Plan](docs/c004-plan.md)
 - [Gemini Meta-Optimizer](docs/gemini-meta-optimizer.md)
 - [Final Report](docs/final-report.md)
 

@@ -107,6 +107,12 @@ def _task_policy(state: AgentState) -> str:
             f"answer can be derived from the prompt or visible files, write a first candidate to {required_paths} early, "
             "then verify existence/content with test/stat/head/grep/sed/awk before finish."
         )
+    if state.task_class in {"code_debug", "browser_security", "binary_reverse", "data_query"}:
+        return (
+            f"This is a {state.task_class} task. Do not stop at creating files. Run focused public/self-checks when available. "
+            "If a check fails, extract the failing assertion/traceback/diff/missing behavior, patch the behavior it names, "
+            "then rerun that focused check. Finish only after fresh behavioral evidence passes."
+        )
     return (
         "Assume a minimal Terminal-Bench container. Prefer POSIX shell primitives before optional runtimes; "
         "only probe/install language tools when the task clearly requires them or visible files justify it."

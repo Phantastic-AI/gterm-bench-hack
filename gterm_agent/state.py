@@ -19,8 +19,8 @@ Phase = Literal[
     "ABORT",
 ]
 
-CANDIDATE_ID = "C003_adaptive_thinking"
-AGENT_VERSION = "0.3.4-c003-artifact-enforced"
+CANDIDATE_ID = "C004_behavior_repair_loop"
+AGENT_VERSION = "0.4.0-c004-behavior-repair"
 MAX_PROMPT_TOKENS_BEFORE_COMPACT = 80_000
 PROMPT_CHAR_BUDGET = MAX_PROMPT_TOKENS_BEFORE_COMPACT * 4
 
@@ -138,6 +138,9 @@ class AgentState:
     parse_repair_attempts: int = 0
     infra_classification: str = ""
     artifact_contract_repairs: int = 0
+    behavior_repair_attempts: int = 0
+    last_failed_check_step: int = 0
+    last_failed_check_digest: str = ""
 
     def elapsed_sec(self) -> int:
         return int(time.monotonic() - self.started_monotonic)

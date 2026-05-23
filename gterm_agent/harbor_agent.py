@@ -73,7 +73,7 @@ class GeminiDirectAgent(BaseAgent):
         state.task_class = budget.task_class
         state.task_budget = budget.__dict__.copy()
         state.required_outputs = extract_required_outputs(instruction)
-        state.add_ledger(f"Initialized C003 {budget.task_class} budget: steps={budget.max_steps}, shell={budget.max_shell_calls}, wall={budget.max_wall_time_sec}s, outputs={len(state.required_outputs)}.")
+        state.add_ledger(f"Initialized C004 {budget.task_class} budget: steps={budget.max_steps}, shell={budget.max_shell_calls}, wall={budget.max_wall_time_sec}s, outputs={len(state.required_outputs)}.")
         self.trace = TraceWriter(self.logs_dir, candidate_id=CANDIDATE_ID, model=self.gemini_model, run_id=environment.session_id)
         self.trace.write_task(instruction)
         client = GeminiClient(model=self.gemini_model)
@@ -144,7 +144,7 @@ class GeminiDirectAgent(BaseAgent):
                     state.abort_reason = stop_reason
                     break
                 state.parse_repair_attempts += 1
-                forced_message = f"Your last response was invalid but C003 will recover if you comply: {redact_text(err)}. Return exactly one JSON object using the action protocol. Escape newlines inside JSON strings as \n; no markdown."
+                forced_message = f"Your last response was invalid but C004 will recover if you comply: {redact_text(err)}. Return exactly one JSON object using the action protocol. Escape newlines inside JSON strings as \n; no markdown."
                 last_action_result = forced_message
                 continue
 
@@ -171,12 +171,22 @@ class GeminiDirectAgent(BaseAgent):
 
             if action.action == "finish":
                 state.phase = "CRITIC_GATE"
+                if self._has_unrepaired_failed_check(state):
+                    gate = GateResult(False, "latest failed public/self-check has not been repaired", stale_verification=True, no_public_check=False, evidence=[state.last_failed_check_digest])
+                    if self.trace:
+                        self.trace.critic_gate(step, gate.to_dict())
+                    state.phase = "REPAIR"
+                    state.repair_hypotheses.append(gate.reason)
+                    state.add_ledger(f"Finish rejected: {gate.reason}")
+                    forced_message = self._behavior_repair_message(state) or gate.repair_prompt()
+                    last_action_result = forced_message
+                    continue
                 gate = await self._pre_finish_gate(environment, state, action.message or action.reason)
                 if self.trace:
                     self.trace.critic_gate(step, gate.to_dict())
                 if gate.ok:
                     status = "finish"
-                    stop_reason = action.message or action.reason or "C003 pre-finish gate passed"
+                    stop_reason = action.message or action.reason or "C004 pre-finish gate passed"
                     state.phase = "FINISH"
                     break
                 state.phase = "REPAIR"
@@ -196,13 +206,14 @@ class GeminiDirectAgent(BaseAgent):
             obs = await self._dispatch_action(environment, step, action, state, budget.command_timeout_sec)
             last_action_result = obs
             state.phase = "OBSERVE"
+            forced_message = forced_message or self._behavior_repair_message(state)
             auto_gate = await self._auto_finish_gate(environment, state, action)
             if auto_gate is not None:
                 if self.trace:
                     self.trace.critic_gate(step, auto_gate.to_dict())
                 if auto_gate.ok:
                     status = "finish"
-                    stop_reason = f"C003 auto-finish: {auto_gate.reason}"
+                    stop_reason = f"C004 auto-finish: {auto_gate.reason}"
                     state.phase = "FINISH"
                     break
                 state.add_ledger(f"Auto-finish gate not ready: {auto_gate.reason}")
@@ -226,6 +237,7 @@ class GeminiDirectAgent(BaseAgent):
             "task_class": state.task_class,
             "parse_repair_attempts": state.parse_repair_attempts,
             "infra_classification": state.infra_classification,
+            "behavior_repair_attempts": state.behavior_repair_attempts,
         }
 
 
@@ -286,6 +298,28 @@ class GeminiDirectAgent(BaseAgent):
         if action.action == "shell" and _shell_writes_required(action.command or "", required):
             return False
         return action.action not in {"finish", "abort"}
+
+    def _behavior_repair_message(self, state: AgentState) -> str | None:
+        if state.task_class == "simple_file" or not state.public_checks:
+            return None
+        latest = state.public_checks[-1]
+        if latest.passed or latest.step <= state.last_mutation_step:
+            return None
+        if state.last_failed_check_step == latest.step:
+            return None
+        state.last_failed_check_step = latest.step
+        state.last_failed_check_digest = compact_text(latest.evidence, 1800)
+        state.behavior_repair_attempts += 1
+        return (
+            "Behavior repair required: the latest public/self-check failed. Treat this failure as the current source of truth. "
+            "Do not finish and do not repeat broad exploration. Extract the failing assertion/traceback/diff/missing behavior, "
+            "patch the code/artifact to address that exact behavior, then rerun the focused check.\n\n"
+            f"FAILED_CHECK_DIGEST:\n{state.last_failed_check_digest}"
+        )
+
+    def _has_unrepaired_failed_check(self, state: AgentState) -> bool:
+        latest = state.public_checks[-1] if state.public_checks else None
+        return bool(latest and not latest.passed and state.last_mutation_step <= latest.step)
 
     async def _dispatch_action(self, environment: BaseEnvironment, step: int, action: AgentAction, state: AgentState, budget_timeout_sec: int) -> str:
         state.action_calls += 1
@@ -395,13 +429,13 @@ class GeminiDirectAgent(BaseAgent):
             if not latest_check_fresh and not wrote_required:
                 return None
         else:
-            # C003: code/data/browser/binary tasks must have a real behavioral check,
+            # C004: code/data/browser/binary tasks must have a real behavioral check,
             # not just an existing output file.
             if not latest_check_fresh:
                 return None
             if state.task_class in {"code_debug", "data_query", "browser_security", "binary_reverse"} and not self._public_check_is_meaningful(state, latest_check.command if latest_check else ""):
                 return GateResult(False, f"{state.task_class} requires a meaningful behavioral public check before auto-finish")
-        gate = await self._pre_finish_gate(environment, state, "C003 auto-finish after fresh evidence")
+        gate = await self._pre_finish_gate(environment, state, "C004 auto-finish after fresh evidence")
         return gate
 
     def _public_check_is_meaningful(self, state: AgentState, command: str) -> bool:
