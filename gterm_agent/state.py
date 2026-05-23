@@ -20,7 +20,7 @@ Phase = Literal[
 ]
 
 CANDIDATE_ID = "C003_adaptive_thinking"
-AGENT_VERSION = "0.3.2-c003-loose-simple"
+AGENT_VERSION = "0.3.3-c003-artifact-contract"
 MAX_PROMPT_TOKENS_BEFORE_COMPACT = 80_000
 PROMPT_CHAR_BUDGET = MAX_PROMPT_TOKENS_BEFORE_COMPACT * 4
 
@@ -137,6 +137,7 @@ class AgentState:
     repeated_passive_actions: int = 0
     parse_repair_attempts: int = 0
     infra_classification: str = ""
+    artifact_contract_repairs: int = 0
 
     def elapsed_sec(self) -> int:
         return int(time.monotonic() - self.started_monotonic)

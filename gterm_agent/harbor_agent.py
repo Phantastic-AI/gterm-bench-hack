@@ -108,6 +108,7 @@ class GeminiDirectAgent(BaseAgent):
                 state.abort_reason = stop_reason
                 break
 
+            forced_message = forced_message or self._artifact_contract_message(state)
             state.phase = self._choose_phase(state)
             if self.trace:
                 self.trace.state_update(step, state.to_prompt_dict())
@@ -189,6 +190,7 @@ class GeminiDirectAgent(BaseAgent):
                     state.phase = "FINISH"
                     break
                 state.add_ledger(f"Auto-finish gate not ready: {auto_gate.reason}")
+            forced_message = forced_message or self._artifact_contract_message(state)
         else:
             stop_reason = f"max_steps {budget.max_steps} reached"
             state.abort_reason = stop_reason
@@ -227,6 +229,31 @@ class GeminiDirectAgent(BaseAgent):
         if state.public_checks:
             return "VERIFY"
         return "ACT"
+
+    def _artifact_contract_message(self, state: AgentState) -> str | None:
+        if not state.required_outputs:
+            return None
+        missing = [ro.path for ro in state.required_outputs if not ro.exists and ro.path not in state.touched_files]
+        if not missing:
+            return None
+        if state.task_class == "simple_file" and state.action_calls >= 2 and state.last_mutation_step == 0:
+            state.artifact_contract_repairs += 1
+            paths = ", ".join(missing)
+            return (
+                "Artifact contract repair: the task explicitly requires output artifact(s) "
+                f"{paths}, but none have been created. Your next action must be write_file "
+                "or a shell command that writes one of those exact paths. Do not run another "
+                "interpreter/tool availability check before creating the artifact. A missing "
+                "required output is an automatic verifier failure."
+            )
+        if state.last_required_output_check_step and missing:
+            state.artifact_contract_repairs += 1
+            paths = ", ".join(missing)
+            return (
+                "Artifact contract repair: runtime checked the required output path(s) and they are still missing: "
+                f"{paths}. Create or edit the required artifact now, then verify it exists."
+            )
+        return None
 
     async def _dispatch_action(self, environment: BaseEnvironment, step: int, action: AgentAction, state: AgentState, budget_timeout_sec: int) -> str:
         state.action_calls += 1
