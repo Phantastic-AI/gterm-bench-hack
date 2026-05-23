@@ -61,3 +61,6 @@ Final target/version will be confirmed before submission.
 - [C000 Smoke Results](docs/c000-smoke-results.md)
 - [C001 System Prompt](docs/C001_LEDGER_VERIFY_SYSTEM_PROMPT.md)
 
+
+## Documents
+- [C001 runner hygiene](docs/runner-hygiene.md) — canonical isolated-job run layout and verifier-staging guardrails.
