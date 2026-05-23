@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Harbor 0.8 invokes `docker compose ...`. Some Debian hosts ship standalone
+# `docker-compose` without the Docker CLI compose plugin. Put this wrapper early
+# in PATH for Harbor runs on those hosts; all non-compose docker commands are
+# delegated to the real Docker CLI unchanged.
+
+if [[ "${1:-}" == "compose" ]]; then
+  shift
+  exec docker-compose "$@"
+fi
+
+exec /usr/bin/docker "$@"
