@@ -31,7 +31,7 @@ class GeminiClient:
     def endpoint(self) -> str:
         return f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
 
-    def generate(self, contents: list[dict[str, Any]], *, temperature: float = 0.2, max_output_tokens: int = 8192, retries: int = 3) -> GeminiResponse:
+    def generate(self, contents: list[dict[str, Any]], *, temperature: float = 0.2, max_output_tokens: int = 8192, retries: int = 3, system_prompt: str | None = None) -> GeminiResponse:
         payload = {
             "contents": contents,
             "generationConfig": {
@@ -41,6 +41,8 @@ class GeminiClient:
                 "thinkingConfig": {"thinkingBudget": int(os.environ.get("GTERM_THINKING_BUDGET", "512"))},
             },
         }
+        if system_prompt:
+            payload["systemInstruction"] = {"parts": [{"text": system_prompt}]}
         data = json.dumps(payload).encode("utf-8")
         last_error: Exception | None = None
         for attempt in range(1, retries + 1):
@@ -59,7 +61,10 @@ class GeminiClient:
                     raw = json.loads(resp.read().decode("utf-8"))
                 latency_ms = int((time.monotonic() - started) * 1000)
                 text = _extract_text(raw)
-                return GeminiResponse(text=text, usage=raw.get("usageMetadata") or {}, raw=raw, latency_ms=latency_ms)
+                usage = raw.get("usageMetadata") or {}
+                if raw.get("candidates"):
+                    usage = {**usage, "finishReason": raw["candidates"][0].get("finishReason")}
+                return GeminiResponse(text=text, usage=usage, raw=raw, latency_ms=latency_ms)
             except urllib.error.HTTPError as e:
                 body = redact_text(e.read().decode("utf-8", errors="replace"), max_chars=4000)
                 last_error = RuntimeError(f"Gemini HTTP {e.code}: {body}")

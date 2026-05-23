@@ -20,7 +20,7 @@ class TraceWriter:
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.trace_dir = self.logs_dir / "trace-code"
         self.trace_dir.mkdir(parents=True, exist_ok=True)
-        for sub in ["steps", "observations", "files", "verification", "replay", "analysis"]:
+        for sub in ["steps", "observations", "files", "verification", "replay", "analysis", "state"]:
             (self.trace_dir / sub).mkdir(exist_ok=True)
         self.candidate_id = candidate_id
         self.model = model
@@ -31,6 +31,7 @@ class TraceWriter:
         self.total_completion_tokens = 0
         self.replay_commands: list[tuple[str, str]] = []
         self.status = "running"
+        self.agent_version = "0.1.0-c001" if candidate_id == "C001_ledger_verify" else "0.1.0-c000"
         self.started_at = utc_now()
         self.log_path = self.logs_dir / "pi-style-trace.jsonl"
 
@@ -71,6 +72,27 @@ class TraceWriter:
             "metrics": {"prompt_tokens": prompt_tokens or None, "completion_tokens": completion_tokens or None},
         })
 
+
+    def state_update(self, step_no: int, state: dict[str, Any]) -> None:
+        (self.trace_dir / "state" / f"{step_no:04d}.state.json").write_text(json.dumps(_redact_obj(state), indent=2), encoding="utf-8")
+        self.event("state_update", step=step_no, state=state)
+
+    def model_action(self, step_no: int, action: dict[str, Any]) -> None:
+        self.event("model_action", step=step_no, action=action)
+
+    def public_verify(self, step_no: int, check: dict[str, Any]) -> None:
+        with (self.trace_dir / "verification" / "public-checks.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(_redact_obj(check), sort_keys=True) + "\n")
+        self.event("public_verify", step=step_no, check=check)
+
+    def critic_gate(self, step_no: int, gate: dict[str, Any]) -> None:
+        with (self.trace_dir / "verification" / "critic-gates.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(_redact_obj({"step": step_no, **gate}), sort_keys=True) + "\n")
+        self.event("critic_gate", step=step_no, gate=gate)
+
+    def failure_signature(self, step_no: int, sig: dict[str, Any]) -> None:
+        self.event("failure_signature", step=step_no, signature=sig)
+
     def exec_step(self, step_no: int, command: str, cwd: str, timeout_sec: int, result: Any, duration_ms: int, purpose: str = "") -> None:
         stdout = redact_text(getattr(result, "stdout", "") or "", max_chars=30000)
         stderr = redact_text(getattr(result, "stderr", "") or "", max_chars=30000)
@@ -92,7 +114,7 @@ class TraceWriter:
         })
         self.replay_commands.append((purpose, command))
 
-    def finish(self, status: str, reason: str = "") -> None:
+    def finish(self, status: str, reason: str = "", final_state: dict[str, Any] | None = None) -> None:
         self.status = status
         self.event("finish", status=status, reason=reason)
         (self.trace_dir / "trace.yaml").write_text(_yamlish({
@@ -104,7 +126,7 @@ class TraceWriter:
             "status": status,
             "event_count": self.event_i,
         }), encoding="utf-8")
-        (self.trace_dir / "harness.yaml").write_text(_yamlish({"candidate_id": self.candidate_id, "agent": "GeminiDirectAgent", "version": "0.1.0-c000", "max_steps": os.environ.get("GTERM_MAX_STEPS", "40")}), encoding="utf-8")
+        (self.trace_dir / "harness.yaml").write_text(_yamlish({"candidate_id": self.candidate_id, "agent": "GeminiDirectAgent", "version": self.agent_version, "max_steps": os.environ.get("GTERM_MAX_STEPS", "40")}), encoding="utf-8")
         (self.trace_dir / "ledger.jsonl").write_text((self.logs_dir / "pi-style-trace.jsonl").read_text(encoding="utf-8"), encoding="utf-8")
         replay = ["#!/usr/bin/env bash", "set -euo pipefail", "cd /app", ""]
         for purpose, command in self.replay_commands:
@@ -114,7 +136,11 @@ class TraceWriter:
         rp = self.trace_dir / "replay" / "replay_commands.sh"
         rp.write_text("\n".join(replay), encoding="utf-8")
         rp.chmod(0o755)
-        (self.trace_dir / "analysis" / "failure_digest.md").write_text(f"# C000 trial digest\n\nStatus: {status}\n\nReason: {redact_text(reason)}\n\nSee `../ledger.jsonl` and `../replay/replay_commands.sh`.\n", encoding="utf-8")
+        if final_state is not None:
+            (self.trace_dir / "state" / "final_state.json").write_text(json.dumps(_redact_obj(final_state), indent=2), encoding="utf-8")
+        (self.trace_dir / "analysis" / "failure_digest.md").write_text(f"# {self.candidate_id} trial digest\n\nStatus: {status}\n\nReason: {redact_text(reason)}\n\nSee `../ledger.jsonl`, `../state/final_state.json`, and `../replay/replay_commands.sh`.\n", encoding="utf-8")
+        scorecard = {"candidate_id": self.candidate_id, "status": status, "reason": redact_text(reason), "events": self.event_i}
+        (self.trace_dir / "analysis" / "scorecard.yaml").write_text(_yamlish(scorecard), encoding="utf-8")
         self._write_trajectory()
 
     def _write_trajectory(self) -> None:
@@ -124,9 +150,9 @@ class TraceWriter:
             "schema_version": "ATIF-v1.7",
             "session_id": self.run_id,
             "trajectory_id": f"{self.run_id}-{self.candidate_id}",
-            "agent": {"name": "gterm-gemini-direct", "version": "0.1.0-c000", "model_name": self.model},
+            "agent": {"name": "gterm-gemini-direct", "version": self.agent_version, "model_name": self.model},
             "steps": self.atif_steps,
-            "notes": "C000 direct Gemini shell agent trajectory",
+            "notes": f"{self.candidate_id} direct Gemini agent trajectory",
             "final_metrics": {"total_prompt_tokens": self.total_prompt_tokens or None, "total_completion_tokens": self.total_completion_tokens or None, "total_steps": len(self.atif_steps)},
             "extra": {"candidate_id": self.candidate_id, "status": self.status},
         }

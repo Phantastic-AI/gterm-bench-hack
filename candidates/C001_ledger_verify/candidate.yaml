@@ -1,0 +1,16 @@
+id: C001_ledger_verify
+name: Goal-loop direct Gemini with ledger and finish gate
+model: gemini-3.5-flash
+status: implementation
+inherits: C000_baseline
+features:
+  - persisted Oracle system prompt loaded every run
+  - AgentState rolling ledger and compact per-turn context
+  - 80k-token hard context compaction contract
+  - read_file/write_file/list_files/shell/finish/abort action protocol
+  - required-output path extraction from task instruction
+  - runtime pre-finish gate
+  - public/self-check freshness tracking
+  - no-progress and budget stop conditions
+  - upgraded trace events for state/action/check/gate/failure
+promotion_target: ">=2/5 on fixed n=5 diagnostic with zero exceptions"
