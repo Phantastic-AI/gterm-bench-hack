@@ -58,4 +58,5 @@ Final target/version will be confirmed before submission.
 - [Runner Strategy](docs/runner-strategy.md)
 - [Appzilla Runbook](docs/appzilla-runbook.md)
 - [Submission Notes](docs/submission.md)
+- [C000 Smoke Results](docs/c000-smoke-results.md)
 
