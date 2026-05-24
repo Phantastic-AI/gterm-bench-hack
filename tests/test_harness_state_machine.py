@@ -270,6 +270,11 @@ class HarnessStateMachineTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(budget.task_class, "git_repair")
 
+    def test_c007_simple_file_uses_low_thinking_to_protect_json_actions(self):
+        h = self._harness()
+        state = AgentState(task_class="simple_file")
+        self.assertEqual(h._choose_thinking_level(state), "low")
+
     def test_c007_traits_are_composable_and_model_profile_is_swappable(self):
         instruction = "Download the Debian source package, build it from source, install the binary to /usr/local/bin/tool, and commit the git fix."
         budget = classify_task_budget(instruction, 60, 840, 120, 240)

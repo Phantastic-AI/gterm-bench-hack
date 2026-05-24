@@ -321,7 +321,9 @@ class GeminiDirectAgent(BaseAgent):
 
     def _choose_thinking_level(self, state: AgentState) -> str:
         if state.task_class == "simple_file":
-            return "medium"
+            # Simple artifact tasks suffer more from Gemini Flash overthinking into
+            # truncated JSON than from insufficient reasoning. Keep the action small.
+            return "low"
         if state.parse_errors or state.repair_hypotheses or state.no_progress_count or state.failure_signatures:
             return "high"
         return "high"
