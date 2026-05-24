@@ -20,7 +20,7 @@ Phase = Literal[
 ]
 
 CANDIDATE_ID = "C006_hybrid_scoring"
-AGENT_VERSION = "0.6.0-c006-hybrid-scoring"
+AGENT_VERSION = "0.6.1-c006-hybrid-scoring"
 MAX_PROMPT_TOKENS_BEFORE_COMPACT = 80_000
 PROMPT_CHAR_BUDGET = MAX_PROMPT_TOKENS_BEFORE_COMPACT * 4
 
@@ -201,6 +201,7 @@ def classify_task_budget(instruction: str, requested_max_steps: int, requested_w
     has_browser = any(k in text for k in ("selenium", "browser", "chrome", "xss", "html", "javascript", "alert", "iframe", "sanitize", "script tag", "event handler"))
     has_binary = any(k in text for k in ("elf", "binary", "reverse engineer", "disassemble", "objdump", "readelf"))
     has_build = any(k in text for k in ("makefile", "cmake", "source package", "apt-get source", "from source", "/usr/local/bin", "binary should be installed")) or ("install" in text and any(k in text for k in ("binary", "executable", "source", "build", "compile", "/usr/local/bin"))) or ("build" in text and any(k in text for k in ("binary", "executable", "source", "make", "install"))) or ("compile" in text and any(k in text for k in ("binary", "executable", "source", "make", "install")))
+    has_git_repair = any(k in text for k in ("git", "reflog", "lost commit", "merge conflict", "unmerged", "branch", "commit")) and any(k in text for k in ("fix", "recover", "restore", "merge", "lost", "conflict", "commit", "branch"))
     has_code = any(k in text for k in ("fix", "bug", "test", "pytest", "npm", "implement", "function", "script", "async"))
     has_computation_answer = any(k in text for k in ("count", "sum", "average", "token", "tokens", "dataset", "parse", "compute", "calculate", "statistics", "answer.txt")) and any(k in text for k in ("answer", "output", "write", "save", "result"))
     has_output_path = bool(_APP_PATH_RE.search(instruction) or _ABS_OUTPUT_PATH_RE.search(instruction) or _PATH_RE.search(instruction))
@@ -213,6 +214,8 @@ def classify_task_budget(instruction: str, requested_max_steps: int, requested_w
         cls, steps, wall, shells, no_prog, timeout, why = "browser_security", 32, 480, 60, 5, 120, "browser/security tasks require adversarial and benign checks before finish"
     elif has_binary:
         cls, steps, wall, shells, no_prog, timeout, why = "binary_reverse", 32, 480, 58, 5, 120, "binary/reverse tasks need binary inspection and conservative outputs"
+    elif has_git_repair:
+        cls, steps, wall, shells, no_prog, timeout, why = "git_repair", 32, 520, 64, 5, 120, "git repair tasks require a mutation, clean status, and fresh verification"
     elif has_regex_task and has_output_path:
         cls, steps, wall, shells, no_prog, timeout, why = "simple_file", 18, 300, 34, 10, 60, "regex artifact task should write the requested pattern early"
     elif has_computation_answer:
@@ -336,5 +339,5 @@ def extract_required_outputs(instruction: str) -> list[RequiredOutput]:
 
 def is_public_check_command(command: str, purpose: str = "") -> bool:
     text = f"{purpose}\n{command}".lower()
-    keywords = ("test", "check", "verify", "pytest", "npm test", "yarn test", "pnpm test", "make test", "cargo test", "go test", "mvn test", "gradle test", "./test", "sqlite3", "readelf", "objdump", "file ", "ldd", "which ", "/usr/local/bin/", "make", "cmake")
+    keywords = ("test", "check", "verify", "pytest", "npm test", "yarn test", "pnpm test", "make test", "cargo test", "go test", "mvn test", "gradle test", "./test", "sqlite3", "readelf", "objdump", "file ", "ldd", "which ", "/usr/local/bin/", "make", "cmake", "git status", "git diff", "git log", "git reflog", "git branch")
     return any(k in text for k in keywords)

@@ -132,6 +132,13 @@ def _task_policy(state: AgentState) -> str:
             "Do not abort just because package probing fails; inspect visible source trees and README/Makefile files. Finish only after "
             "the requested binary/install target is present and a direct smoke/which/ldd/run check passes."
         )
+    if state.task_class == "git_repair":
+        return (
+            "Class git_repair: first locate the target repo and inspect status/log/reflog/branches. A failed merge or cherry-pick can still "
+            "mutate the worktree; resolve conflicts, git add, commit when appropriate, and verify git status --porcelain is empty. If "
+            "/app/resources/patch_files exists, compare each patch file to the corresponding repo file. Finish only after a fresh git "
+            "status/diff/test check proves the repo is clean and the requested recovered changes are present."
+        )
     if state.task_class == "code_debug":
         return (
             "Class code_debug: file existence is not enough. Inspect the implicated source, make the smallest behavior patch, "

@@ -51,7 +51,7 @@ class GeminiDirectAgent(BaseAgent):
         model = self.model_name or "google/gemini-3.5-flash"
         self.gemini_model = model.split("/", 1)[1] if model.startswith("google/") else model
         self.trace: TraceWriter | None = None
-        self.system_prompt = load_system_prompt() + "\n\nC006 runtime addendum: use a tight single-action coding-agent loop. Return exactly one observable action per turn. Do not use broad transaction actions; the runtime will reject them. Keep plan/debug/decision state in concise ledger text and host-side traces. Finish only through deterministic class gates: required paths, fresh meaningful checks, and no unrepaired failures. Semantic critic approval is not a completion signal."
+        self.system_prompt = load_system_prompt() + "\n\nC006.1 runtime addendum: use a tight single-action coding-agent loop. Return exactly one observable action per turn. Do not use broad transaction actions; the runtime will reject them. Keep plan/debug/decision state in concise ledger text and host-side traces. Finish only through deterministic class gates: required paths, fresh meaningful checks, and no unrepaired failures. Semantic critic approval is not a completion signal."
 
     @staticmethod
     def name() -> str:
@@ -422,6 +422,8 @@ class GeminiDirectAgent(BaseAgent):
             purpose = action.purpose or action.ledger or "shell action"
             timeout = min(action.timeout_sec or budget_timeout_sec, budget_timeout_sec)
             obs = await self._exec(environment, action.command or "true", action.cwd, timeout, purpose, step=step, state=state)
+            if _looks_mutating(action.command or ""):
+                state.last_mutation_step = step
             if action.is_public_check or is_public_check_command(action.command or "", purpose):
                 self._record_public_check(state, step, action.command or "", obs)
             self._update_progress_after_action(state, action, obs)
@@ -622,6 +624,8 @@ PASS only if the touched artifacts plausibly solve the task and the latest relev
             return any(k in cmd for k in ("/usr/local/bin/", "which ", "ldd ", " pmars ", "pmars -", "tail -n", "dpkg -L"))
         if state.task_class == "data_query":
             return any(k in cmd for k in ("sol.sql", "my-sql-query.sql", "sqlite3", "explain", "select", "pytest"))
+        if state.task_class == "git_repair":
+            return any(k in cmd for k in ("git status", "git diff", "git log", "git reflog", "git branch", "pytest", "cmp ", "md5sum", "sha1sum"))
         if state.task_class == "browser_security":
             # Bare execution of a test module that only defines tests is not enough;
             # require a real test runner/browser/adversarial payload signal.
@@ -683,6 +687,10 @@ PASS only if the touched artifacts plausibly solve the task and the latest relev
                 return GateResult(False, f"{state.task_class} public/self-check is not behavioral enough", stale_verification=stale_verification, no_public_check=no_public_check, evidence=evidence)
             if state.task_class == "build_compile_install" and not _build_check_has_install_smoke(latest_check.command, latest_check.evidence):
                 return GateResult(False, "build_compile_install requires installed binary plus direct smoke/ldd/which evidence", stale_verification=stale_verification, no_public_check=no_public_check, evidence=evidence)
+            if state.task_class == "git_repair":
+                git_gate = await self._git_repair_gate(environment, state, evidence, stale_verification, no_public_check)
+                if not git_gate.ok:
+                    return git_gate
         if no_public_check and not output_check_fresh:
             return GateResult(False, "no fresh public/self-check or required-output evidence", stale_verification=stale_verification, no_public_check=True, evidence=evidence)
         if stale_verification and not output_check_fresh:
@@ -690,6 +698,43 @@ PASS only if the touched artifacts plausibly solve the task and the latest relev
         evidence.append("finish gate passed")
         state.add_ledger(f"Finish gate passed: {reason}")
         return GateResult(True, "finish gate passed", stale_verification=False, no_public_check=no_public_check, evidence=evidence)
+
+    async def _git_repair_gate(self, environment: BaseEnvironment, state: AgentState, evidence: list[str], stale_verification: bool, no_public_check: bool) -> GateResult:
+        if state.last_mutation_step == 0:
+            return GateResult(False, "git_repair requires a visible git mutation before finish", stale_verification=stale_verification, no_public_check=no_public_check, evidence=evidence)
+        command = r'''set -eu
+repo_git=$(find /app -maxdepth 3 -type d -name .git | head -n 1 || true)
+if [ -z "$repo_git" ]; then echo NO_GIT_REPO; exit 1; fi
+repo=${repo_git%/.git}
+cd "$repo"
+echo "repo=$repo"
+status=$(git status --porcelain=v1)
+printf '%s\n' "$status"
+if [ -n "$status" ]; then echo GIT_STATUS_NOT_CLEAN; exit 1; fi
+git diff --quiet --check
+patchdir=/app/resources/patch_files
+if [ -d "$patchdir" ]; then
+  for src in "$patchdir"/*; do
+    [ -f "$src" ] || continue
+    base=$(basename "$src")
+    matches=$(find "$repo" -path "$repo/.git" -prune -o -type f -name "$base" -print)
+    count=$(printf '%s\n' "$matches" | sed '/^$/d' | wc -l | tr -d ' ')
+    if [ "$count" = "1" ]; then
+      dst=$(printf '%s\n' "$matches" | sed '/^$/d' | head -n 1)
+      cmp -s "$src" "$dst" || { echo "PATCH_MISMATCH $src $dst"; exit 1; }
+      echo "PATCH_MATCH $base"
+    else
+      echo "PATCH_SKIP $base count=$count"
+    fi
+  done
+fi
+echo GIT_REPAIR_CLEAN'''
+        obs = await self._exec(environment, command, "/app", 90, "pre-finish git repair clean/patch check", step=state.step, state=state)
+        rc = _extract_exit_code(obs)
+        evidence.append(f"git repair gate exit={rc}")
+        if rc != 0:
+            return GateResult(False, "git_repair repo is not clean or recovered patch files do not match", stale_verification=stale_verification, no_public_check=no_public_check, evidence=evidence + [compact_text(obs, 1200)])
+        return GateResult(True, "git repair gate passed", stale_verification=stale_verification, no_public_check=no_public_check, evidence=evidence)
 
 
 def _latest_failed_optional_runtime_probe(state: AgentState) -> bool:
@@ -717,7 +762,7 @@ def _browser_output_looks_dummy(ro: Any) -> bool:
 
 def _looks_mutating(command: str) -> bool:
     low = command.lower()
-    return any(k in low for k in (" >", ">>", "tee ", "sed -i", "cat >", "touch ", "mkdir ", "cp ", "mv ", "rm ", "base64 -d >", "python - <<", "python3 - <<", "apt-get ", "apt ", "make", "cmake", "gcc", " cc ", "chmod ", "install ", "dpkg-source"))
+    return any(k in low for k in (" >", ">>", "tee ", "sed -i", "cat >", "touch ", "mkdir ", "cp ", "mv ", "rm ", "base64 -d >", "python - <<", "python3 - <<", "apt-get ", "apt ", "make", "cmake", "gcc", " cc ", "chmod ", "install ", "dpkg-source", "git merge", "git cherry-pick", "git revert", "git reset", "git commit", "git add", "git checkout ", "git restore", "git apply", "git am"))
 
 
 def _is_milestone_progress(task_class: str, command: str, obs: str) -> bool:
@@ -725,6 +770,8 @@ def _is_milestone_progress(task_class: str, command: str, obs: str) -> bool:
     low = obs.lower()
     if task_class == "build_compile_install":
         return any(k in cmd for k in ("apt-get source", "apt-cache", "apt-get update", "apt-get install", "dpkg-source", "tar ", "make", "cmake", "gcc", "./configure", "chmod", "install ", "ldd", "which ", "/usr/local/bin/")) or any(k in low for k in ("makefile", "configure", "gcc", "compil", "link", "undefined reference", "no rule to make", "installed", "/usr/local/bin"))
+    if task_class == "git_repair":
+        return any(k in cmd for k in ("git status", "git diff", "git log", "git reflog", "git merge", "git cherry-pick", "git commit", "git add", "cmp ", "pytest")) or any(k in low for k in ("conflict", "working tree clean", "nothing to commit", "patch_match"))
     if task_class == "code_debug":
         return any(k in cmd for k in ("pytest", "unittest", "npm test", "go test", "cargo test", "python -m", "python3 -m", "sed -i", "cat >", "tee ")) or any(k in low for k in ("assert", "traceback", "failed", "passed"))
     if task_class == "answer_requires_computation":

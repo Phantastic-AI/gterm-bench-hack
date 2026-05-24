@@ -163,6 +163,22 @@ class HarnessStateMachineTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(budget.task_class, "code_debug")
 
+    def test_c006_git_repair_instruction_classifies_as_git_repair(self):
+        budget = classify_task_budget(
+            "Recover the lost git commit from the reflog, merge it into master, resolve any merge conflict, and commit the result.",
+            60, 840, 120, 240,
+        )
+        self.assertEqual(budget.task_class, "git_repair")
+
+    async def test_c006_git_repair_gate_rejects_dirty_repo(self):
+        h = self._harness()
+        state = AgentState(task_class="git_repair", last_mutation_step=3, last_verification_step=4)
+        state.public_checks.append(PublicCheck(step=4, command="git status --porcelain=v1", exit_code=0, passed=True, evidence="UU _includes/about.md", after_last_mutation=True))
+        env = _FakeEnv([_Result("repo=/app/personal-site\nUU _includes/about.md\nGIT_STATUS_NOT_CLEAN\n", return_code=1)])
+        gate = await h._pre_finish_gate(env, state, "test")
+        self.assertFalse(gate.ok)
+        self.assertIn("git_repair repo is not clean", gate.reason)
+
     async def test_c006_browser_finish_rejects_dummy_html(self):
         h = self._harness()
         state = AgentState(task_class="browser_security", last_mutation_step=2, last_verification_step=3)
