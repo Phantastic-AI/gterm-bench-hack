@@ -308,10 +308,10 @@ class GeminiDirectAgent(BaseAgent):
 
 
     def _choose_thinking_level(self, state: AgentState) -> str:
-        if state.parse_errors or state.repair_hypotheses or state.no_progress_count or state.failure_signatures:
-            return "high"
         if state.task_class == "simple_file":
             return "medium"
+        if state.parse_errors or state.repair_hypotheses or state.no_progress_count or state.failure_signatures:
+            return "high"
         return "high"
 
 
