@@ -367,6 +367,15 @@ class HarnessStateMachineTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("binary_reverse", state.task_traits)
 
+    def test_c007_dynamic_binary_trait_ignores_self_htmlparser_noise(self):
+        h = self._harness()
+        state = AgentState(task_class="browser_security", task_traits=["browser_security", "html_sanitizer"])
+        action = parse_action('{"action":"shell","command":"python3 -m html.parser"}')
+
+        h._update_dynamic_traits(state, action, "def handle_starttag(self, tag, attrs): print(self.getpos())")
+
+        self.assertNotIn("binary_reverse", state.task_traits)
+
     def test_c007_extract_elf_classifies_as_binary_not_build(self):
         budget = classify_task_budget(
             "Given an ELF binary /app/a.out, create /app/extract.js that extracts section data and writes /app/out.json.",
