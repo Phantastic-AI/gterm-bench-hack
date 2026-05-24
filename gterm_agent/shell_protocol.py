@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
-ActionName = Literal["read_file", "write_file", "list_files", "shell", "reflect", "finish", "abort"]
+ActionName = Literal["read_file", "write_file", "list_files", "shell", "reflect", "transaction", "finish", "abort"]
 
 DENYLIST_PATTERNS = [
     re.compile(r"\b(printenv|env)\b.*\b(GEMINI|GOOGLE|KEY|TOKEN|SECRET)", re.I),
@@ -31,13 +31,18 @@ class AgentAction:
     max_bytes: int = 12000
     max_depth: int = 3
     is_public_check: bool = False
+    steps: list[dict[str, Any]] | None = None
+    plan_update: dict[str, Any] | None = None
+    debug_log: list[Any] | None = None
+    decision_log: list[Any] | None = None
+    finish_request: bool = False
     raw: dict[str, Any] | None = None
 
 
 def parse_action(text: str) -> AgentAction:
     data = _json_from_text(text)
     action = data.get("action")
-    valid = {"read_file", "write_file", "list_files", "shell", "reflect", "finish", "abort"}
+    valid = {"read_file", "write_file", "list_files", "shell", "reflect", "transaction", "finish", "abort"}
     if action not in valid:
         raise ValueError(f"Invalid action {action!r}; expected one of {sorted(valid)}")
     ledger = str(data.get("ledger") or "")
@@ -69,6 +74,52 @@ def parse_action(text: str) -> AgentAction:
         if not message.strip():
             raise ValueError("reflect action requires reflection/message text")
         return AgentAction("reflect", reason=message, message=message, ledger=ledger, raw=data)
+    if action == "transaction":
+        steps = data.get("steps")
+        if not isinstance(steps, list) or not steps:
+            raise ValueError("transaction action requires a non-empty steps list")
+        normalized_steps: list[dict[str, Any]] = []
+        for i, step in enumerate(steps, start=1):
+            if not isinstance(step, dict):
+                raise ValueError(f"transaction step {i} must be an object")
+            tool = str(step.get("tool") or step.get("action") or "").strip()
+            if tool not in {"read_file", "write_file", "list_files", "shell"}:
+                raise ValueError(f"transaction step {i} invalid tool {tool!r}")
+            normalized = dict(step)
+            normalized["tool"] = tool
+            if tool == "shell":
+                command = str(normalized.get("command") or "").strip()
+                if not command:
+                    raise ValueError(f"transaction shell step {i} requires command")
+                validate_command(command)
+                normalized["command"] = command
+                normalized["cwd"] = normalize_app_path(str(normalized.get("cwd") or "/app"), allow_file=False)
+                normalized["timeout_sec"] = max(1, min(int(normalized.get("timeout_sec") or 120), 600))
+            elif tool in {"read_file", "write_file"}:
+                normalized["path"] = normalize_app_path(str(normalized.get("path") or ""), allow_file=True)
+                if tool == "write_file":
+                    content = str(normalized.get("content") if normalized.get("content") is not None else "")
+                    if len(content.encode("utf-8")) > 256 * 1024:
+                        raise ValueError(f"transaction write_file step {i} content exceeds 256KB cap")
+                    normalized["content"] = content
+            elif tool == "list_files":
+                normalized["path"] = normalize_app_path(str(normalized.get("path") or "/app"), allow_file=False)
+                normalized["max_depth"] = max(1, min(int(normalized.get("max_depth") or 3), 6))
+            normalized_steps.append(normalized)
+        plan_update = data.get("plan_update") if isinstance(data.get("plan_update"), dict) else {}
+        debug_log = data.get("debug_log") if isinstance(data.get("debug_log"), list) else []
+        decision_log = data.get("decision_log") if isinstance(data.get("decision_log"), list) else []
+        return AgentAction(
+            "transaction",
+            purpose=purpose,
+            ledger=ledger,
+            steps=normalized_steps,
+            plan_update=plan_update,
+            debug_log=debug_log,
+            decision_log=decision_log,
+            finish_request=bool(data.get("finish_request")),
+            raw=data,
+        )
     reason = str(data.get("reason") or data.get("finish_reason") or data.get("message") or "")
     return AgentAction(action, reason=reason, message=str(data.get("message") or reason), ledger=ledger, raw=data)
 

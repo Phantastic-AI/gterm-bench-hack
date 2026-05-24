@@ -19,8 +19,8 @@ Phase = Literal[
     "ABORT",
 ]
 
-CANDIDATE_ID = "C004_behavior_repair_loop"
-AGENT_VERSION = "0.4.1-c004-reflection"
+CANDIDATE_ID = "C005_transaction_critic"
+AGENT_VERSION = "0.5.0-c005-transaction-critic"
 MAX_PROMPT_TOKENS_BEFORE_COMPACT = 80_000
 PROMPT_CHAR_BUDGET = MAX_PROMPT_TOKENS_BEFORE_COMPACT * 4
 
@@ -144,6 +144,11 @@ class AgentState:
     last_reflection_step: int = 0
     last_reflection_failed_check_step: int = 0
     last_reflection: str = ""
+    plan_doc: dict[str, Any] = field(default_factory=dict)
+    debug_log: list[Any] = field(default_factory=list)
+    decision_log: list[Any] = field(default_factory=list)
+    semantic_critic_calls: int = 0
+    latest_semantic_critic: dict[str, Any] = field(default_factory=dict)
 
     def elapsed_sec(self) -> int:
         return int(time.monotonic() - self.started_monotonic)
@@ -310,7 +315,7 @@ def extract_required_outputs(instruction: str) -> list[RequiredOutput]:
                 # unless the instruction explicitly asks to edit/fix/modify them.
                 if base.startswith("test_") or base in {"test_outputs.py", "tests.py"}:
                     continue
-                if base in {"filter.py"} and not any(w in low for w in ("fix", "modify", "edit", "write")):
+                if base in {"filter.py"} and not any(w in low for w in ("fix", "modify", "edit", "write", "create", "save", "output")):
                     continue
                 if any(ctx in low for ctx in negative_context) and not any(w in low for w in ("fix", "modify", "edit", "write", "create", "save", "output", "craft", "payload", "bypass", "break")):
                     continue

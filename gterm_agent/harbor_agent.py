@@ -51,7 +51,7 @@ class GeminiDirectAgent(BaseAgent):
         model = self.model_name or "google/gemini-3.5-flash"
         self.gemini_model = model.split("/", 1)[1] if model.startswith("google/") else model
         self.trace: TraceWriter | None = None
-        self.system_prompt = load_system_prompt() + "\n\nC003 runtime addendum: use adaptive Gemini 3 thinkingLevel policy, preserve C001/C002 trace/gate behavior, require behavioral public checks before finishing code/data/browser tasks, and keep required-output extraction conservative."
+        self.system_prompt = load_system_prompt() + "\n\nC005 runtime addendum: operate like a compact coding-agent CLI. Prefer transaction actions that update durable PLAN/DEBUG/DECISION logs and execute ordered read/edit/check steps. Replan inside the same run when observations contradict assumptions. A separate semantic critic may reject finish requests; treat that as authoritative visible runtime feedback."
 
     @staticmethod
     def name() -> str:
@@ -73,7 +73,13 @@ class GeminiDirectAgent(BaseAgent):
         state.task_class = budget.task_class
         state.task_budget = budget.__dict__.copy()
         state.required_outputs = extract_required_outputs(instruction)
-        state.add_ledger(f"Initialized C004 {budget.task_class} budget: steps={budget.max_steps}, shell={budget.max_shell_calls}, wall={budget.max_wall_time_sec}s, outputs={len(state.required_outputs)}.")
+        state.plan_doc = {
+            "goal": "Solve the Terminal-Bench task using visible files, local commands, and fresh checks.",
+            "current_hypothesis": "Initial environment inspection is required.",
+            "next_check": "Inspect working directory and task-relevant files.",
+            "fallback_if_fails": "Replan around missing tools/files using available POSIX primitives.",
+        }
+        state.add_ledger(f"Initialized C005 {budget.task_class} budget: steps={budget.max_steps}, shell={budget.max_shell_calls}, wall={budget.max_wall_time_sec}s, outputs={len(state.required_outputs)}.")
         self.trace = TraceWriter(self.logs_dir, candidate_id=CANDIDATE_ID, model=self.gemini_model, run_id=environment.session_id)
         self.trace.write_task(instruction)
         client = GeminiClient(model=self.gemini_model)
@@ -144,7 +150,7 @@ class GeminiDirectAgent(BaseAgent):
                     state.abort_reason = stop_reason
                     break
                 state.parse_repair_attempts += 1
-                forced_message = f"Your last response was invalid but C004.1 will recover if you comply: {redact_text(err)}. Return exactly one JSON object using the action protocol. Escape newlines inside JSON strings as \n; no markdown."
+                forced_message = f"Your last response was invalid but C005 will recover if you comply: {redact_text(err)}. Return exactly one JSON object using the action protocol. Prefer a transaction action. Escape newlines inside JSON strings as \n; no markdown."
                 last_action_result = forced_message
                 continue
 
@@ -185,6 +191,46 @@ class GeminiDirectAgent(BaseAgent):
                 last_action_result = forced_message
                 continue
 
+            if action.action == "transaction":
+                obs = await self._dispatch_transaction(environment, step, action, state, budget.command_timeout_sec)
+                last_action_result = obs
+                state.phase = "OBSERVE"
+                if action.finish_request:
+                    state.phase = "CRITIC_GATE"
+                    gate = await self._pre_finish_gate(environment, state, action.message or action.reason or action.ledger)
+                    if gate.ok:
+                        critic_gate = await self._semantic_finish_critic(client, instruction, state)
+                        gate = critic_gate
+                    if self.trace:
+                        self.trace.critic_gate(step, gate.to_dict())
+                    if gate.ok:
+                        status = "finish"
+                        stop_reason = action.message or action.reason or action.ledger or "C005 transaction finish approved"
+                        state.phase = "FINISH"
+                        break
+                    state.phase = "REPAIR"
+                    state.repair_hypotheses.append(gate.reason)
+                    state.add_ledger(f"Finish rejected: {gate.reason}")
+                    forced_message = self._behavior_repair_message(state) or gate.repair_prompt()
+                    last_action_result = forced_message
+                    continue
+                forced_message = forced_message or self._behavior_repair_message(state)
+                auto_gate = await self._auto_finish_gate(environment, state, action)
+                if auto_gate is not None:
+                    if auto_gate.ok:
+                        critic_gate = await self._semantic_finish_critic(client, instruction, state)
+                        auto_gate = critic_gate
+                    if self.trace:
+                        self.trace.critic_gate(step, auto_gate.to_dict())
+                    if auto_gate.ok:
+                        status = "finish"
+                        stop_reason = f"C005 auto-finish: {auto_gate.reason}"
+                        state.phase = "FINISH"
+                        break
+                    state.add_ledger(f"Auto-finish gate not ready: {auto_gate.reason}")
+                forced_message = forced_message or self._artifact_contract_message(state)
+                continue
+
             if action.action == "finish":
                 state.phase = "CRITIC_GATE"
                 if self._has_unrepaired_failed_check(state):
@@ -198,11 +244,13 @@ class GeminiDirectAgent(BaseAgent):
                     last_action_result = forced_message
                     continue
                 gate = await self._pre_finish_gate(environment, state, action.message or action.reason)
+                if gate.ok:
+                    gate = await self._semantic_finish_critic(client, instruction, state)
                 if self.trace:
                     self.trace.critic_gate(step, gate.to_dict())
                 if gate.ok:
                     status = "finish"
-                    stop_reason = action.message or action.reason or "C004 pre-finish gate passed"
+                    stop_reason = action.message or action.reason or "C005 pre-finish and semantic critic passed"
                     state.phase = "FINISH"
                     break
                 state.phase = "REPAIR"
@@ -225,11 +273,13 @@ class GeminiDirectAgent(BaseAgent):
             forced_message = forced_message or self._behavior_repair_message(state)
             auto_gate = await self._auto_finish_gate(environment, state, action)
             if auto_gate is not None:
+                if auto_gate.ok:
+                    auto_gate = await self._semantic_finish_critic(client, instruction, state)
                 if self.trace:
                     self.trace.critic_gate(step, auto_gate.to_dict())
                 if auto_gate.ok:
                     status = "finish"
-                    stop_reason = f"C004 auto-finish: {auto_gate.reason}"
+                    stop_reason = f"C005 auto-finish: {auto_gate.reason}"
                     state.phase = "FINISH"
                     break
                 state.add_ledger(f"Auto-finish gate not ready: {auto_gate.reason}")
@@ -392,6 +442,94 @@ class GeminiDirectAgent(BaseAgent):
             return obs
         return f"Unsupported dispatch action: {action.action}"
 
+    async def _dispatch_transaction(self, environment: BaseEnvironment, step: int, action: AgentAction, state: AgentState, budget_timeout_sec: int) -> str:
+        self._apply_transaction_memory(state, action)
+        observations: list[str] = []
+        stopped = False
+        for i, raw_step in enumerate(action.steps or [], start=1):
+            tool = str(raw_step.get("tool") or raw_step.get("action") or "")
+            purpose = str(raw_step.get("purpose") or raw_step.get("ledger") or f"transaction step {i}: {tool}")
+            sub = AgentAction(
+                action=tool,  # type: ignore[arg-type]
+                command=raw_step.get("command"),
+                cwd=str(raw_step.get("cwd") or "/app"),
+                timeout_sec=int(raw_step.get("timeout_sec") or budget_timeout_sec),
+                purpose=purpose,
+                ledger=str(raw_step.get("ledger") or purpose),
+                path=raw_step.get("path"),
+                content=raw_step.get("content"),
+                max_bytes=int(raw_step.get("max_bytes") or 12000),
+                max_depth=int(raw_step.get("max_depth") or 3),
+                is_public_check=bool(raw_step.get("is_public_check") or raw_step.get("public_check")),
+                raw={"action": tool, **raw_step},
+            )
+            obs = await self._dispatch_action(environment, step, sub, state, budget_timeout_sec)
+            observations.append(f"TRANSACTION_STEP {i}/{len(action.steps or [])} tool={tool}\n{compact_text(obs, 5000)}")
+            if tool == "shell" and _extract_exit_code(obs) != 0:
+                stopped = True
+                state.add_ledger(f"Transaction stopped on failed shell step {i}: {compact_text(purpose, 120)}")
+                break
+        summary = "\n\n".join(observations)
+        if stopped:
+            summary += "\n\nTRANSACTION_STATUS: stopped_on_failed_shell_step; replan or reflect from this evidence."
+        else:
+            summary += "\n\nTRANSACTION_STATUS: completed_all_steps."
+        if self.trace:
+            self.trace.write_working_memory(state.to_prompt_dict())
+            self.trace.event("transaction", step=step, step_count=len(action.steps or []), stopped=stopped, finish_request=action.finish_request)
+        return compact_text(summary, 12000)
+
+    def _apply_transaction_memory(self, state: AgentState, action: AgentAction) -> None:
+        if action.plan_update:
+            for key, value in action.plan_update.items():
+                if value is not None:
+                    state.plan_doc[str(key)] = compact_text(str(value), 1200)
+        for item in action.debug_log or []:
+            state.debug_log.append(item)
+        state.debug_log = state.debug_log[-60:]
+        for item in action.decision_log or []:
+            state.decision_log.append(item)
+        state.decision_log = state.decision_log[-60:]
+        if action.ledger:
+            state.add_ledger(action.ledger)
+
+    async def _semantic_finish_critic(self, client: GeminiClient, instruction: str, state: AgentState) -> GateResult:
+        if state.task_class == "simple_file":
+            return GateResult(True, "simple_file hard gates passed; semantic critic skipped")
+        state.semantic_critic_calls += 1
+        prompt = f"""You are the semantic finish critic for a Terminal-Bench agent. Judge only visible evidence; do not assume hidden verifier access.
+
+TASK:
+{instruction}
+
+STATE_JSON:
+{json.dumps(state.to_prompt_dict(), ensure_ascii=False, indent=2)[:50000]}
+
+Return exactly JSON:
+{{"verdict":"pass"|"repair","reason":"concise reason","required_next_action":"what actor should do next","check_to_run":"specific visible check to run before finish"}}
+
+PASS only if the touched artifacts plausibly solve the task and the latest relevant check is meaningful and fresh. REPAIR if evidence is stale, superficial, semantically unrelated, or contradicted by failures."""
+        try:
+            resp = client.generate([_user_part(prompt)], temperature=0.0, max_output_tokens=2048, system_prompt="You are a strict semantic critic. Return JSON only.", thinking_level="high")
+            state.model_calls += 1
+            if self.trace:
+                self.trace.model_step(state.step * 1000 + state.semantic_critic_calls, prompt, resp.text, resp.usage, resp.latency_ms)
+            verdict = _json_obj_from_text(resp.text)
+            state.latest_semantic_critic = verdict
+            if self.trace:
+                self.trace.event("semantic_critic", step=state.step, verdict=verdict)
+                self.trace.write_working_memory(state.to_prompt_dict())
+            if str(verdict.get("verdict", "")).lower() == "pass":
+                return GateResult(True, "semantic critic approved finish", evidence=[str(verdict.get("reason", ""))])
+            reason = str(verdict.get("reason") or "semantic critic requested repair")
+            next_action = str(verdict.get("required_next_action") or "")
+            check = str(verdict.get("check_to_run") or "")
+            return GateResult(False, f"semantic critic requested repair: {reason}", evidence=[next_action, check])
+        except Exception as e:  # noqa: BLE001
+            reason = f"semantic critic failed closed: {redact_text(str(e), max_chars=800)}"
+            state.latest_semantic_critic = {"verdict": "repair", "reason": reason}
+            return GateResult(False, reason, evidence=["critic_error"])
+
     async def _read_file(self, environment: BaseEnvironment, step: int, action: AgentAction, state: AgentState) -> str:
         path = action.path or "/app"
         max_bytes = action.max_bytes
@@ -476,13 +614,13 @@ class GeminiDirectAgent(BaseAgent):
             if not latest_check_fresh and not wrote_required:
                 return None
         else:
-            # C004: code/data/browser/binary tasks must have a real behavioral check,
+            # C005: code/data/browser/binary tasks must have a real behavioral check,
             # not just an existing output file.
             if not latest_check_fresh:
                 return None
             if state.task_class in {"code_debug", "data_query", "browser_security", "binary_reverse"} and not self._public_check_is_meaningful(state, latest_check.command if latest_check else ""):
                 return GateResult(False, f"{state.task_class} requires a meaningful behavioral public check before auto-finish")
-        gate = await self._pre_finish_gate(environment, state, "C004 auto-finish after fresh evidence")
+        gate = await self._pre_finish_gate(environment, state, "C005 auto-finish after fresh evidence")
         return gate
 
     def _public_check_is_meaningful(self, state: AgentState, command: str) -> bool:
@@ -600,3 +738,17 @@ def posix_dirname(path: str) -> str:
     if "/" not in path.rstrip("/"):
         return "/app"
     return path.rsplit("/", 1)[0] or "/"
+
+
+def _json_obj_from_text(text: str) -> dict[str, Any]:
+    raw = (text or "").strip()
+    try:
+        obj = json.loads(raw)
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start >= 0 and end > start:
+            obj = json.loads(raw[start : end + 1])
+            return obj if isinstance(obj, dict) else {}
+        raise

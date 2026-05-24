@@ -31,7 +31,7 @@ class TraceWriter:
         self.total_completion_tokens = 0
         self.replay_commands: list[tuple[str, str]] = []
         self.status = "running"
-        self.agent_version = {"C000_baseline": "0.1.0-c000", "C001_ledger_verify": "0.1.0-c001", "C002_budgeted_repair": "0.2.0-c002", "C003_adaptive_thinking": "0.3.4-c003-artifact-enforced", "C004_behavior_repair_loop": "0.4.1-c004-reflection"}.get(candidate_id, "0.0.0-unknown")
+        self.agent_version = {"C000_baseline": "0.1.0-c000", "C001_ledger_verify": "0.1.0-c001", "C002_budgeted_repair": "0.2.0-c002", "C003_adaptive_thinking": "0.3.4-c003-artifact-enforced", "C004_behavior_repair_loop": "0.4.1-c004-reflection", "C005_transaction_critic": "0.5.0-c005-transaction-critic"}.get(candidate_id, "0.0.0-unknown")
         self.started_at = utc_now()
         self.log_path = self.logs_dir / "pi-style-trace.jsonl"
 
@@ -90,6 +90,47 @@ class TraceWriter:
             f.write(json.dumps(_redact_obj({"step": step_no, **gate}), sort_keys=True) + "\n")
         self.event("critic_gate", step=step_no, gate=gate)
 
+    def write_working_memory(self, state: dict[str, Any]) -> None:
+        plan = state.get("plan_doc") or {}
+        debug_log = state.get("debug_log") or []
+        decision_log = state.get("decision_log") or []
+        plan_lines = ["# PLAN", ""]
+        for key in ("goal", "current_hypothesis", "next_check", "fallback_if_fails"):
+            if plan.get(key):
+                plan_lines.extend([f"## {key}", "", redact_text(str(plan.get(key))), ""])
+        if not any(plan.get(k) for k in plan):
+            plan_lines.append("_No plan recorded yet._")
+        (self.trace_dir / "PLAN.md").write_text("\n".join(plan_lines), encoding="utf-8")
+
+        debug_lines = ["# DEBUG", ""]
+        for item in debug_log[-40:]:
+            if isinstance(item, dict):
+                debug_lines.append(f"- observation: {redact_text(str(item.get('observation', '')))}")
+                if item.get("hypothesis"):
+                    debug_lines.append(f"  hypothesis: {redact_text(str(item.get('hypothesis')))}")
+                if item.get("next_probe"):
+                    debug_lines.append(f"  next_probe: {redact_text(str(item.get('next_probe')))}")
+            else:
+                debug_lines.append(f"- {redact_text(str(item))}")
+        if len(debug_lines) == 2:
+            debug_lines.append("_No debug notes recorded yet._")
+        (self.trace_dir / "DEBUG.md").write_text("\n".join(debug_lines) + "\n", encoding="utf-8")
+
+        decision_lines = ["# DECISION_LOG", ""]
+        for item in decision_log[-40:]:
+            if isinstance(item, dict):
+                decision_lines.append(f"- decision: {redact_text(str(item.get('decision', '')))}")
+                if item.get("reason"):
+                    decision_lines.append(f"  reason: {redact_text(str(item.get('reason')))}")
+                rejected = item.get("rejected")
+                if rejected:
+                    decision_lines.append(f"  rejected: {redact_text(str(rejected))}")
+            else:
+                decision_lines.append(f"- {redact_text(str(item))}")
+        if len(decision_lines) == 2:
+            decision_lines.append("_No decisions recorded yet._")
+        (self.trace_dir / "DECISION_LOG.md").write_text("\n".join(decision_lines) + "\n", encoding="utf-8")
+
     def failure_signature(self, step_no: int, sig: dict[str, Any]) -> None:
         self.event("failure_signature", step=step_no, signature=sig)
 
@@ -97,10 +138,10 @@ class TraceWriter:
         stdout = redact_text(getattr(result, "stdout", "") or "", max_chars=30000)
         stderr = redact_text(getattr(result, "stderr", "") or "", max_chars=30000)
         rc = int(getattr(result, "return_code", -1))
-        (self.trace_dir / "observations" / f"{step_no:04d}.stdout.headtail.txt").write_text(stdout, encoding="utf-8")
-        (self.trace_dir / "observations" / f"{step_no:04d}.stderr.headtail.txt").write_text(stderr, encoding="utf-8")
+        _unique_path(self.trace_dir / "observations" / f"{step_no:04d}.stdout.headtail.txt").write_text(stdout, encoding="utf-8")
+        _unique_path(self.trace_dir / "observations" / f"{step_no:04d}.stderr.headtail.txt").write_text(stderr, encoding="utf-8")
         payload = {"command": command, "cwd": cwd, "timeout_sec": timeout_sec, "duration_ms": duration_ms, "return_code": rc, "purpose": purpose}
-        (self.trace_dir / "steps" / f"{step_no:04d}.exec.json").write_text(json.dumps(_redact_obj(payload), indent=2), encoding="utf-8")
+        _unique_path(self.trace_dir / "steps" / f"{step_no:04d}.exec.json").write_text(json.dumps(_redact_obj(payload), indent=2), encoding="utf-8")
         self.event("tool_call", step=step_no, **payload, stdout_chars=len(stdout), stderr_chars=len(stderr))
         call_id = f"shell-{step_no:04d}"
         self.atif_steps.append({
@@ -171,3 +212,15 @@ def _redact_obj(value: Any) -> Any:
 
 def _yamlish(d: dict[str, Any]) -> str:
     return "\n".join(f"{k}: {json.dumps(v) if not isinstance(v, (int, float)) else v}" for k, v in d.items()) + "\n"
+
+
+def _unique_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    stem = path.stem
+    suffix = path.suffix
+    for i in range(2, 1000):
+        candidate = path.with_name(f"{stem}.{i}{suffix}")
+        if not candidate.exists():
+            return candidate
+    return path.with_name(f"{stem}.{int(time.time() * 1000)}{suffix}")

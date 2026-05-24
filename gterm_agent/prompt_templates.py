@@ -54,6 +54,10 @@ def render_turn_context(
         "recent_events": state.recent_events[-8:],
         "failure_signatures": [fs.__dict__ for fs in state.failure_signatures[-8:]],
         "public_checks": [pc.__dict__ for pc in state.public_checks[-8:]],
+        "plan_doc": state.plan_doc,
+        "debug_log": state.debug_log[-12:],
+        "decision_log": state.decision_log[-12:],
+        "latest_semantic_critic": state.latest_semantic_critic,
     }
     task_policy = _task_policy(state)
     text = f"""TASK:
@@ -61,7 +65,7 @@ def render_turn_context(
 
 RUNTIME_STATE:
 state={json.dumps(context, ensure_ascii=False, indent=2)}
-goal_mode=C003_adaptive_thinking with runtime-enforced finish gate, adaptive thinking, and stricter behavioral checks
+goal_mode=C005_transaction_critic with transaction turns, durable plan/debug/decision logs, live replanning, semantic critic, and hard invariant gates
 remaining_actions={remaining_actions}
 remaining_shell_calls={remaining_shell}
 remaining_time_sec={remaining_time}
@@ -86,6 +90,12 @@ FRESHNESS_REQUIREMENTS:
 
 TASK_POLICY:
 {task_policy}
+
+C005_TRANSACTION_GUIDANCE:
+- Prefer a single transaction action for each substantial turn.
+- In each transaction, update plan_update/debug_log/decision_log, then perform the ordered reads/edits/checks that naturally belong together.
+- Replan inside the same run when observations contradict assumptions: missing runtime, file not found, unexpected output, failed check, stale hypothesis, or repeated passive action.
+- The runtime will stop a transaction on the first failed shell step so you can reflect/replan from precise evidence.
 
 """
     if forced_message:
@@ -112,7 +122,7 @@ def _task_policy(state: AgentState) -> str:
             f"This is a {state.task_class} task. Do not stop at creating files. Run focused public/self-checks when available. "
             "If a check fails, first return a reflect action that states the exact failed assertion, expected behavior, "
             "likely file/function, smallest patch, and focused check. After reflection, patch the behavior it names, "
-            "then rerun that focused check. Finish only after fresh behavioral evidence passes."
+            "then rerun that focused check. Finish only after fresh behavioral evidence passes and the semantic critic can approve."
         )
     return (
         "Assume a minimal Terminal-Bench container. Prefer POSIX shell primitives before optional runtimes; "

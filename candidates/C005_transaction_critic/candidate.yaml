@@ -1,0 +1,14 @@
+id: C005_transaction_critic
+name: Transaction Ralph harness with semantic finish critic
+version: 0.5.0-c005-transaction-critic
+model: gemini-3.5-flash
+changes:
+  - adds transaction action for ordered read/edit/check batches
+  - persists per-trial PLAN.md, DEBUG.md, and DECISION_LOG.md under trace-code
+  - supports live replanning via transaction plan_update/debug_log/decision_log fields
+  - adds semantic Gemini critic before finish for non-simple tasks
+  - keeps deterministic gates limited to hard invariants: required outputs, stale checks, unrepaired failures
+non_goals:
+  - no hidden verifier feedback inside a submitted trajectory
+  - no task-specific solution hardcoding
+  - no dummy artifact finish escapes
