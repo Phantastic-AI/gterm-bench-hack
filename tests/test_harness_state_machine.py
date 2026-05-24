@@ -127,6 +127,18 @@ class HarnessStateMachineTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(h._violates_artifact_contract(state, parse_action('{"action":"read_file","path":"/app/test_outputs.py"}')))
         self.assertFalse(h._violates_artifact_contract(state, parse_action('{"action":"write_file","path":"/app/out.html","content":"<svg onload=alert(1)>"}')))
 
+    def test_c007_browser_security_forces_artifact_after_passive_exploration_without_finish_attempt(self):
+        h = self._harness()
+        state = AgentState(task_class="browser_security", task_traits=["browser_security", "html_sanitizer"], action_calls=6)
+        state.required_outputs.append(RequiredOutput(path="/app/out.html", source="instruction_regex", exists=False, checked_step=0))
+
+        msg = h._artifact_contract_message(state)
+
+        self.assertIn("Artifact contract repair", msg)
+        self.assertIn("deliverable", msg)
+        self.assertTrue(h._violates_artifact_contract(state, parse_action('{"action":"read_file","path":"/app/test_outputs.py"}')))
+        self.assertFalse(h._violates_artifact_contract(state, parse_action('{"action":"write_file","path":"/app/out.html","content":"<svg onload=alert(1)>"}')))
+
     async def test_c007_browser_finish_requires_real_browser_execution(self):
         h = self._harness()
         state = AgentState(task_class="browser_security", task_traits=["browser_security", "html_sanitizer"], last_mutation_step=2, last_verification_step=3)
@@ -367,6 +379,18 @@ class HarnessStateMachineTests(unittest.IsolatedAsyncioTestCase):
         gate = await h._pre_finish_gate(_FakeEnv(), state, "test")
         self.assertFalse(gate.ok)
         self.assertIn("binary_reverse", gate.reason)
+
+    async def test_c007_binary_gate_takes_precedence_over_build_trait_noise(self):
+        h = self._harness()
+        state = AgentState(task_class="binary_reverse", task_traits=["binary_reverse", "build_install"], last_mutation_step=2, last_verification_step=3)
+        state.required_outputs.append(RequiredOutput(path="/app/extract.js", source="test", exists=True))
+        state.public_checks.append(PublicCheck(step=3, command="readelf -l a.out", exit_code=0, passed=True, evidence="exit_code=0\nstdout:\nprogram headers\n", after_last_mutation=True))
+
+        gate = await h._pre_finish_gate(_FakeEnv(), state, "test")
+
+        self.assertFalse(gate.ok)
+        self.assertIn("binary_reverse", gate.reason)
+        self.assertNotIn("build_compile_install", gate.reason)
 
     async def test_c007_binary_finish_accepts_json_validated_extractor_run(self):
         h = self._harness()

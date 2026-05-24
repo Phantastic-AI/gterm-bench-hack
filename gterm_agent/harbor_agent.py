@@ -370,6 +370,14 @@ class GeminiDirectAgent(BaseAgent):
                 "Artifact contract repair: runtime checked the required output path(s) and they are still missing: "
                 f"{paths}. Create or edit the required artifact as soon as the class milestones make it possible, then verify it exists."
             )
+        if _has_trait(state, "html_sanitizer") and state.action_calls >= 5 and missing:
+            state.artifact_contract_repairs += 1
+            paths = ", ".join(missing)
+            return (
+                "Artifact contract repair: repeated passive browser/security exploration found the expected behavior but no deliverable exists: "
+                f"{paths}. Your next action must create or edit one of those exact deliverable paths with write_file/write_file_b64 "
+                "or a shell redirect/tee. Do not reread tests or rerun exploratory probes until an explicit deliverable exists."
+            )
         return None
 
     def _violates_artifact_contract(self, state: AgentState, action: AgentAction) -> bool:
@@ -752,7 +760,7 @@ PASS only if the touched artifacts plausibly solve the task and the latest relev
                 return GateResult(False, f"{state.task_class} public/self-check is not behavioral enough", stale_verification=stale_verification, no_public_check=no_public_check, evidence=evidence)
             if _has_trait(state, "html_sanitizer") and not _browser_check_has_real_execution(latest_check.command, latest_check.evidence):
                 return GateResult(False, "html_sanitizer requires real pytest/Selenium/browser execution evidence", stale_verification=stale_verification, no_public_check=no_public_check, evidence=evidence)
-            if _has_trait(state, "build_install") and not _build_check_has_install_smoke(latest_check.command, latest_check.evidence):
+            if state.task_class != "binary_reverse" and _has_trait(state, "build_install") and not _build_check_has_install_smoke(latest_check.command, latest_check.evidence):
                 return GateResult(False, "build_compile_install requires installed binary plus direct smoke/ldd/which evidence", stale_verification=stale_verification, no_public_check=no_public_check, evidence=evidence)
             if _has_trait(state, "git_repair"):
                 git_gate = await self._git_repair_gate(environment, state, evidence, stale_verification, no_public_check)
