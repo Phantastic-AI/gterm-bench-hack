@@ -17,7 +17,7 @@ Last updated: 2026-05-24.
 | C001 | Codex-built ledger/verify/trace harness | Ran diagnostics; exposed Harbor verifier staging issue | Partially useful |
 | C002 | Codex-built budgeted repair harness | Ran canonical 10-task panel | Historical benchmark snapshot |
 | C003-C006 | Codex-authored adaptive/trait harness line | Ran n=1/n=10 experiments | Superseded by C007 |
-| C007.x | Codex-authored trait/self-audit harness | Current submission-clean line; latest `55e52c7` | Best current harness |
+| C007.x | Codex-authored trait/self-audit harness | Current submission-clean line; latest `cb9587c`; runs blocked by Gemini HTTP 403 | Best current harness |
 | G003 | Gemini 3.5 Flash-generated meta-optimizer proposal | Proposal artifact only; not integrated/run | Research artifact |
 
 ## Important boundary
@@ -26,4 +26,14 @@ C007.x is **not** Gemini-meta-optimized. It is a manual Codex-authored harness c
 
 ## Current safe next step
 
-Let C007.11 finish or time out, publish the score with run root evidence, and stop optimizing unless the next change is clearly generic and testable. Avoid benchmark-specific fixes.
+Stop rerunning until the Gemini key is refreshed. Publish/report C007.12 as the best reliable 10-task evidence: **2/10** (`fix-git`, `regex-log`) at `/srv/appzilla/tbench-gemini-flash/runs/c00712-10-fullverifier-20260524T054550Z`. C007.15 is blocked by HTTP 403 `PERMISSION_DENIED`, not a harness score.
+
+
+## Final C007 run evidence
+
+- Latest pushed commit: `cb9587c` (`Keep container exec hangs from wedging runs`).
+- Local/Appzilla gates for `cb9587c`: `tests/test_harness_state_machine.py` 59/59, compileall, no-secret audit, import smoke; reviewer Noether PASS.
+- C007.12 full-verifier best: `/srv/appzilla/tbench-gemini-flash/runs/c00712-10-fullverifier-20260524T054550Z`, score 2/10, passes `fix-git` and `regex-log`.
+- C007.13: `/srv/appzilla/tbench-gemini-flash/runs/c00713-10-fullverifier-20260524T062311Z`, killed after stale Harbor/container exec behavior.
+- C007.14: `/srv/appzilla/tbench-gemini-flash/runs/c00714-10-hosttimeout-20260524T063722Z`, invalid infra run because `docker compose` plugin was missing.
+- C007.15: `/srv/appzilla/tbench-gemini-flash/runs/c00715-10-hosttimeout-composefix-20260524T063907Z`, Docker Compose fixed but Gemini API began returning HTTP 403 `PERMISSION_DENIED`; run killed to avoid wasting resources.
