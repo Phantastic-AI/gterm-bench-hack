@@ -381,12 +381,17 @@ class GeminiDirectAgent(BaseAgent):
 
     def _requires_reflection(self, state: AgentState) -> bool:
         latest = state.public_checks[-1] if state.public_checks else None
-        return bool(
+        needs = bool(
             latest
             and not latest.passed
             and latest.step > state.last_mutation_step
             and state.last_reflection_failed_check_step < latest.step
         )
+        if needs and latest and state.last_failed_check_step != latest.step:
+            state.last_failed_check_step = latest.step
+            state.last_failed_check_digest = compact_text(latest.evidence, 1800)
+            state.behavior_repair_attempts += 1
+        return needs
 
     def _reflection_required_message(self, state: AgentState) -> str:
         return (
