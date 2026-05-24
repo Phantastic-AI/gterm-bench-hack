@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
-ActionName = Literal["read_file", "write_file", "list_files", "shell", "reflect", "transaction", "finish", "abort"]
+ActionName = Literal["read_file", "write_file", "write_file_b64", "list_files", "shell", "reflect", "transaction", "finish", "abort"]
 
 DENYLIST_PATTERNS = [
     re.compile(r"\b(printenv|env)\b.*\b(GEMINI|GOOGLE|KEY|TOKEN|SECRET)", re.I),
@@ -42,7 +42,7 @@ class AgentAction:
 def parse_action(text: str) -> AgentAction:
     data = _json_from_text(text)
     action = data.get("action")
-    valid = {"read_file", "write_file", "list_files", "shell", "reflect", "transaction", "finish", "abort"}
+    valid = {"read_file", "write_file", "write_file_b64", "list_files", "shell", "reflect", "transaction", "finish", "abort"}
     if action not in valid:
         raise ValueError(f"Invalid action {action!r}; expected one of {sorted(valid)}")
     ledger = str(data.get("ledger") or "")
@@ -59,12 +59,22 @@ def parse_action(text: str) -> AgentAction:
         path = normalize_app_path(str(data.get("path") or ""), allow_file=True)
         max_bytes = max(1, min(int(data.get("max_bytes") or 12000), 40000))
         return AgentAction("read_file", path=path, max_bytes=max_bytes, purpose=purpose, ledger=ledger, raw=data)
-    if action == "write_file":
+    if action in {"write_file", "write_file_b64"}:
         path = normalize_app_path(str(data.get("path") or ""), allow_file=True)
-        content = str(data.get("content") if data.get("content") is not None else "")
+        if action == "write_file_b64":
+            import base64
+            content_b64 = str(data.get("content_b64") or data.get("content") or "")
+            try:
+                content = base64.b64decode(content_b64.encode("ascii"), validate=True).decode("utf-8")
+            except Exception as e:  # noqa: BLE001
+                raise ValueError(f"write_file_b64 content_b64 is not valid base64 utf-8: {e}") from e
+        else:
+            content = str(data.get("content") if data.get("content") is not None else "")
         if len(content.encode("utf-8")) > 256 * 1024:
-            raise ValueError("write_file content exceeds 256KB C001 cap")
-        return AgentAction("write_file", path=path, content=content, purpose=purpose, ledger=ledger, raw=data)
+            raise ValueError("write_file content exceeds 256KB cap")
+        raw = dict(data)
+        raw["action"] = "write_file"
+        return AgentAction("write_file", path=path, content=content, purpose=purpose, ledger=ledger, raw=raw)
     if action == "list_files":
         path = normalize_app_path(str(data.get("path") or "/app"), allow_file=False)
         max_depth = max(1, min(int(data.get("max_depth") or 3), 6))

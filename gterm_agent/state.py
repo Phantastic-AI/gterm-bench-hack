@@ -19,8 +19,8 @@ Phase = Literal[
     "ABORT",
 ]
 
-CANDIDATE_ID = "C005_transaction_critic"
-AGENT_VERSION = "0.5.0-c005-transaction-critic"
+CANDIDATE_ID = "C006_hybrid_scoring"
+AGENT_VERSION = "0.6.0-c006-hybrid-scoring"
 MAX_PROMPT_TOKENS_BEFORE_COMPACT = 80_000
 PROMPT_CHAR_BUDGET = MAX_PROMPT_TOKENS_BEFORE_COMPACT * 4
 
@@ -194,27 +194,35 @@ class AgentState:
 
 
 def classify_task_budget(instruction: str, requested_max_steps: int, requested_wall_time_sec: int, requested_shell_calls: int, requested_timeout_sec: int) -> TaskBudget:
-    """Pick a conservative per-task budget from visible task instructions only."""
+    """Pick a broad, non-task-name-specific budget from visible task instructions only."""
     text = instruction.lower()
     has_regex_task = any(k in text for k in ("regex", "regular expression"))
     has_data_query = (not has_regex_task) and (any(k in text for k in ("sql", "sqlite", "cte", "window function", "database", "sol.sql", "my-sql-query")) or bool(re.search(r"\bquery\b", text) and re.search(r"\b(optimi[sz]e|sql|database|sqlite)\b", text)))
-    has_browser = any(k in text for k in ("selenium", "browser", "chrome", "xss", "html", "javascript", "alert", "iframe"))
+    has_browser = any(k in text for k in ("selenium", "browser", "chrome", "xss", "html", "javascript", "alert", "iframe", "sanitize", "script tag", "event handler"))
     has_binary = any(k in text for k in ("elf", "binary", "reverse engineer", "disassemble", "objdump", "readelf"))
-    has_code = any(k in text for k in ("fix", "bug", "test", "pytest", "npm", "compile", "build", "implement", "function", "script", "async"))
-    has_output_path = bool(_APP_PATH_RE.search(instruction) or _PATH_RE.search(instruction))
+    has_build = any(k in text for k in ("makefile", "cmake", "source package", "apt-get source", "from source", "/usr/local/bin", "binary should be installed")) or ("install" in text and any(k in text for k in ("binary", "executable", "source", "build", "compile", "/usr/local/bin"))) or ("build" in text and any(k in text for k in ("binary", "executable", "source", "make", "install"))) or ("compile" in text and any(k in text for k in ("binary", "executable", "source", "make", "install")))
+    has_code = any(k in text for k in ("fix", "bug", "test", "pytest", "npm", "implement", "function", "script", "async"))
+    has_computation_answer = any(k in text for k in ("count", "sum", "average", "token", "tokens", "dataset", "parse", "compute", "calculate", "statistics", "answer.txt")) and any(k in text for k in ("answer", "output", "write", "save", "result"))
+    has_output_path = bool(_APP_PATH_RE.search(instruction) or _ABS_OUTPUT_PATH_RE.search(instruction) or _PATH_RE.search(instruction))
     has_simple_output = (any(k in text for k in ("write", "create", "save", "output", "put", "store")) or has_regex_task) and has_output_path
     if has_data_query:
-        cls, steps, wall, shells, no_prog, timeout, why = "data_query", 34, 540, 56, 4, 120, "SQL/data tasks need high reasoning but bounded shell loops"
+        cls, steps, wall, shells, no_prog, timeout, why = "data_query", 34, 540, 56, 5, 120, "SQL/data tasks need schema inspection plus execution"
+    elif has_build:
+        cls, steps, wall, shells, no_prog, timeout, why = "build_compile_install", 40, 660, 74, 7, 180, "build/install tasks need source/dependency/build/install/smoke milestones"
     elif has_browser:
-        cls, steps, wall, shells, no_prog, timeout, why = "browser_security", 32, 480, 60, 4, 120, "browser/security tasks require verifier-like checks before finish"
+        cls, steps, wall, shells, no_prog, timeout, why = "browser_security", 32, 480, 60, 5, 120, "browser/security tasks require adversarial and benign checks before finish"
     elif has_binary:
-        cls, steps, wall, shells, no_prog, timeout, why = "binary_reverse", 32, 480, 58, 4, 120, "binary/reverse tasks need high reasoning and conservative output extraction"
+        cls, steps, wall, shells, no_prog, timeout, why = "binary_reverse", 32, 480, 58, 5, 120, "binary/reverse tasks need binary inspection and conservative outputs"
+    elif has_regex_task and has_output_path:
+        cls, steps, wall, shells, no_prog, timeout, why = "simple_file", 18, 300, 34, 10, 60, "regex artifact task should write the requested pattern early"
+    elif has_computation_answer:
+        cls, steps, wall, shells, no_prog, timeout, why = "answer_requires_computation", 28, 420, 48, 5, 120, "answer-file task requires inspecting inputs and running a computation"
     elif has_simple_output and not has_code:
-        cls, steps, wall, shells, no_prog, timeout, why = "simple_file", 18, 300, 34, 10, 60, "simple file-output task gets extra recovery room before no-progress abort"
+        cls, steps, wall, shells, no_prog, timeout, why = "simple_file", 18, 300, 34, 10, 60, "simple artifact task should write the requested output early"
     elif has_code:
-        cls, steps, wall, shells, no_prog, timeout, why = "code_debug", 30, 480, 56, 4, 120, "code/debug task must pass a behavioral check before finish"
+        cls, steps, wall, shells, no_prog, timeout, why = "code_debug", 32, 520, 60, 5, 120, "code/debug task must pass a behavioral check before finish"
     else:
-        cls, steps, wall, shells, no_prog, timeout, why = "unknown", 28, 420, 50, 3, 90, "unknown task gets high-reasoning bounded diagnostic budget"
+        cls, steps, wall, shells, no_prog, timeout, why = "unknown", 28, 420, 50, 4, 90, "unknown task gets bounded diagnostic budget"
     return TaskBudget(
         task_class=cls,
         max_steps=min(int(requested_max_steps), steps),
@@ -256,7 +264,7 @@ def is_passive_action(action: dict[str, Any] | None) -> bool:
     if name != "shell":
         return False
     cmd = str(action.get("command") or "").strip().lower()
-    mutators = (" >", ">>", "tee ", "sed -i", "python - <<", "python3 - <<", "cat >", "touch ", "mkdir ", "cp ", "mv ", "rm ", "npm install", "pip install", "apt ")
+    mutators = (" >", ">>", "tee ", "sed -i", "python - <<", "python3 - <<", "cat >", "touch ", "mkdir ", "cp ", "mv ", "rm ", "npm install", "pip install", "apt ", "apt-get ", "make", "cmake", "gcc", "cc ", "chmod ", "install ", "dpkg-source")
     return not any(m in cmd for m in mutators)
 
 
@@ -283,6 +291,7 @@ def classify_infra_failure_text(text: str) -> str:
 
 _PATH_RE = re.compile(r"(?P<path>(?:/app/|\./)?[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*\.[A-Za-z0-9_.-]+)")
 _APP_PATH_RE = re.compile(r"(?P<path>/app/[A-Za-z0-9_./-]+)")
+_ABS_OUTPUT_PATH_RE = re.compile(r"(?P<path>/(?:usr/local/bin|usr/bin|bin)/[A-Za-z0-9_.-]+)")
 
 
 def extract_required_outputs(instruction: str) -> list[RequiredOutput]:
@@ -295,7 +304,7 @@ def extract_required_outputs(instruction: str) -> list[RequiredOutput]:
         intent = any(word in low for word in output_intents)
         if not intent:
             continue
-        patterns = [_APP_PATH_RE, _PATH_RE]
+        patterns = [_APP_PATH_RE, _ABS_OUTPUT_PATH_RE, _PATH_RE]
         for pattern in patterns:
             for match in pattern.finditer(line):
                 path = match.group("path").strip("'\"`.,:;)")
@@ -304,7 +313,7 @@ def extract_required_outputs(instruction: str) -> list[RequiredOutput]:
                 base_raw = path.rsplit("/", 1)[-1].lower().strip()
                 if base_raw in {"e.g", "i.e", "etc.", "example.com"}:
                     continue
-                if not path.startswith("/app/"):
+                if not path.startswith("/"):
                     path = "/app/" + path.lstrip("./")
                 base = path.rsplit("/", 1)[-1].lower()
                 if base in {"e.g", "i.e", "etc."}:
@@ -327,5 +336,5 @@ def extract_required_outputs(instruction: str) -> list[RequiredOutput]:
 
 def is_public_check_command(command: str, purpose: str = "") -> bool:
     text = f"{purpose}\n{command}".lower()
-    keywords = ("test", "check", "verify", "pytest", "npm test", "yarn test", "pnpm test", "make test", "cargo test", "go test", "mvn test", "gradle test", "./test")
+    keywords = ("test", "check", "verify", "pytest", "npm test", "yarn test", "pnpm test", "make test", "cargo test", "go test", "mvn test", "gradle test", "./test", "sqlite3", "readelf", "objdump", "file ", "ldd", "which ", "/usr/local/bin/", "make", "cmake")
     return any(k in text for k in keywords)

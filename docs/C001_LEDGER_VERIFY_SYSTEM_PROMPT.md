@@ -34,6 +34,7 @@ Valid actions:
 
 {"action":"read_file","path":"relative/or/absolute/path","ledger":"brief state update"}
 {"action":"write_file","path":"relative/or/absolute/path","content":"complete file content","ledger":"brief state update"}
+{"action":"write_file_b64","path":"relative/or/absolute/path","content_b64":"base64 utf-8 file content","ledger":"brief state update"}
 {"action":"list_files","path":"relative/or/absolute/path","ledger":"brief state update"}
 {"action":"shell","command":"command to run","timeout_sec":60,"ledger":"brief state update"}
 {"action":"reflect","reflection":"1. failed assertion/check: ... 2. expected behavior: ... 3. likely file/function: ... 4. smallest patch: ... 5. focused check: ...","ledger":"brief repair hypothesis"}
@@ -41,7 +42,7 @@ Valid actions:
 {"action":"finish","message":"concise summary of completed work and checks","ledger":"final state update"}
 {"action":"abort","reason":"why the task cannot be completed safely or with available evidence","ledger":"final state update"}
 
-Prefer `transaction` for normal coding-agent turns: update the plan/debug/decision logs, perform a small ordered batch of reads/edits/checks, and let the runtime stop the transaction on the first failed shell step. Use single-tool actions only for very small moves or when the runtime explicitly requests them. Use shell commands deliberately. Prefer targeted commands over broad exploration. Respect the remaining action, time, and shell budgets. If a command may run long, set an appropriate timeout_sec. Never finish only because a file was edited; finish only when the visible evidence supports task completion.
+C006 default: use exactly one observable action per turn. Do not use `transaction` unless a runtime message explicitly asks for it; broad transactions hide intermediate failures from the runtime. Use `write_file_b64` when raw JSON escaping would be brittle for code, HTML, SQL, or regex content. Use shell commands deliberately. Prefer targeted commands over broad exploration. Respect the remaining action, time, and shell budgets. If a command may run long, set an appropriate timeout_sec. Never finish only because a file was edited; finish only when the visible evidence supports task completion.
 
 Terminal-Bench environment reality:
 - You are already inside the task container. It may be a very small Linux image.
@@ -53,7 +54,7 @@ Terminal-Bench environment reality:
 Behavior repair rule:
 - File existence is not enough unless the task is explicitly only a file-existence task.
 - When a public/self-check fails, treat the failing assertion, traceback, diff, exit code, or missing behavior as the current source of truth.
-- Replan in the same run whenever an observation contradicts the current hypothesis: missing Python/Node, file not found, unexpected output, failed tests, repeated passive actions, or tool absence. Update `plan_update`, `debug_log`, and `decision_log` before acting again.
+- Replan in the same run whenever an observation contradicts the current hypothesis: missing Python/Node, file not found, unexpected output, failed tests, repeated passive actions, or tool absence. Put concise plan/debug/decision information in the action `ledger`; the runtime records host-side trace artifacts.
 - Your next response after a failed public/self-check should be a `reflect` action, not an immediate patch.
 - In the reflection, identify the exact failed assertion/check, expected behavior, likely file/function, smallest patch, and focused check to rerun.
 - After reflection, repair the behavior named by the latest failed check, not repeat broad exploration.

@@ -65,7 +65,7 @@ def render_turn_context(
 
 RUNTIME_STATE:
 state={json.dumps(context, ensure_ascii=False, indent=2)}
-goal_mode=C005_transaction_critic with transaction turns, durable plan/debug/decision logs, live replanning, semantic critic, and hard invariant gates
+goal_mode=C006_hybrid_scoring single-action loop with broad task-class gates, compact host-side ledger, and deterministic finish gates
 remaining_actions={remaining_actions}
 remaining_shell_calls={remaining_shell}
 remaining_time_sec={remaining_time}
@@ -91,11 +91,12 @@ FRESHNESS_REQUIREMENTS:
 TASK_POLICY:
 {task_policy}
 
-C005_TRANSACTION_GUIDANCE:
-- Prefer a single transaction action for each substantial turn.
-- In each transaction, update plan_update/debug_log/decision_log, then perform the ordered reads/edits/checks that naturally belong together.
+C006_SINGLE_ACTION_GUIDANCE:
+- Return exactly one observable action per turn. Do not use transaction.
+- Put concise plan/debug/decision state in the ledger field; the runtime records host-side trace artifacts.
+- Use write_file_b64 for code, HTML, SQL, or regex content if raw JSON escaping is brittle.
 - Replan inside the same run when observations contradict assumptions: missing runtime, file not found, unexpected output, failed check, stale hypothesis, or repeated passive action.
-- The runtime will stop a transaction on the first failed shell step so you can reflect/replan from precise evidence.
+- Finish immediately after objective runtime gates are satisfied; do not keep exploring after a fresh meaningful check passes.
 
 """
     if forced_message:
@@ -111,18 +112,47 @@ def _task_policy(state: AgentState) -> str:
     if state.task_class == "simple_file":
         required_paths = ", ".join(ro.path for ro in state.required_outputs) or "the requested output path"
         return (
-            "This is a simple file-output task. You are in a minimal Terminal-Bench container: "
-            "do not assume Python/Node/package managers/compilers/network exist. Prefer POSIX shell "
-            "and the write_file action. Do not burn steps probing optional interpreters. If the required "
-            f"answer can be derived from the prompt or visible files, write a first candidate to {required_paths} early, "
-            "then verify existence/content with test/stat/head/grep/sed/awk before finish."
+            "Class simple_artifact/simple_file: write the requested artifact early. You are in a minimal Terminal-Bench "
+            "container; do not assume Python/Node/package managers/compilers/network exist. Prefer POSIX shell and "
+            "write_file/write_file_b64. Do not burn steps probing optional interpreters. If the answer can be derived "
+            f"from the prompt or visible files, write a first candidate to {required_paths}, then verify existence/content "
+            "with test/stat/head/grep/sed/awk before finish."
         )
-    if state.task_class in {"code_debug", "browser_security", "binary_reverse", "data_query"}:
+    if state.task_class == "answer_requires_computation":
+        required_paths = ", ".join(ro.path for ro in state.required_outputs) or "the requested answer file"
         return (
-            f"This is a {state.task_class} task. Do not stop at creating files. Run focused public/self-checks when available. "
-            "If a check fails, first return a reflect action that states the exact failed assertion, expected behavior, "
-            "likely file/function, smallest patch, and focused check. After reflection, patch the behavior it names, "
-            "then rerun that focused check. Finish only after fresh behavioral evidence passes and the semantic critic can approve."
+            "Class answer_requires_computation: do not guess or write 0/empty without evidence. First identify and inspect "
+            "the relevant input data, then run a visible computation with POSIX tools or an available runtime, write "
+            f"the supported answer to {required_paths}, and verify the answer file plus the computation log before finish."
+        )
+    if state.task_class == "build_compile_install":
+        return (
+            "Class build_compile_install: progress milestones are source/package located, dependencies identified, build attempted, "
+            "new compiler/linker error understood, patch applied, build succeeds, install target exists, and smoke command runs. "
+            "Do not abort just because package probing fails; inspect visible source trees and README/Makefile files. Finish only after "
+            "the requested binary/install target is present and a direct smoke/which/ldd/run check passes."
+        )
+    if state.task_class == "code_debug":
+        return (
+            "Class code_debug: file existence is not enough. Inspect the implicated source, make the smallest behavior patch, "
+            "and run a focused behavioral check (pytest/unittest/CLI/import/smoke as available). If a check fails, reflect once "
+            "on the exact assertion and then patch/rerun. Finish only after fresh passing behavior evidence."
+        )
+    if state.task_class == "browser_security":
+        return (
+            "Class browser_security: generic harmless HTML is not success. Preserve required benign content while checking adversarial "
+            "payload behavior. Run or create a local check for script/event-handler/javascript: removal or payload execution as the "
+            "task requires. Barely executing a file that only defines tests is not enough; use pytest/browser/adversarial assertions."
+        )
+    if state.task_class == "data_query":
+        return (
+            "Class data_query: use the exact required SQL/query filename, inspect schema/data, execute or parse the query against "
+            "available DB files, and verify sample rows/counts or EXPLAIN output when relevant. Do not finish with SQL-ish text only."
+        )
+    if state.task_class == "binary_reverse":
+        return (
+            "Class binary_reverse: inspect the binary with file/readelf/objdump/strings or available scripts, run extraction against "
+            "the binary, validate output format, and avoid treating helper/input filenames as deliverables."
         )
     return (
         "Assume a minimal Terminal-Bench container. Prefer POSIX shell primitives before optional runtimes; "

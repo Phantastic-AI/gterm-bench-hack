@@ -45,7 +45,7 @@ _install_harbor_stubs()
 
 from gterm_agent.harbor_agent import GeminiDirectAgent, _json_obj_from_text  # noqa: E402
 from gterm_agent.shell_protocol import parse_action  # noqa: E402
-from gterm_agent.state import AgentState, PublicCheck, RequiredOutput, extract_required_outputs  # noqa: E402
+from gterm_agent.state import AgentState, PublicCheck, RequiredOutput, classify_task_budget, extract_required_outputs  # noqa: E402
 
 
 @dataclass
@@ -72,6 +72,105 @@ class HarnessStateMachineTests(unittest.IsolatedAsyncioTestCase):
         h = object.__new__(GeminiDirectAgent)
         h.trace = None
         return h
+
+    def test_c006_classifies_build_and_computation_without_task_names(self):
+        build = classify_task_budget(
+            "Build the visible source package from source and install the binary to /usr/local/bin/tool, then smoke test it.",
+            60, 840, 120, 240,
+        )
+        self.assertEqual(build.task_class, "build_compile_install")
+        self.assertGreaterEqual(build.no_progress_budget, 6)
+
+        computation = classify_task_budget(
+            "Count the dataset tokens in the files under /app/data and write the final answer to /app/answer.txt.",
+            60, 840, 120, 240,
+        )
+        self.assertEqual(computation.task_class, "answer_requires_computation")
+
+    def test_write_file_b64_decodes_to_normal_write_action(self):
+        action = parse_action('{"action":"write_file_b64","path":"/app/filter.py","content_b64":"cHJpbnQoJ29rJykK","ledger":"write safely"}')
+        self.assertEqual(action.action, "write_file")
+        self.assertEqual(action.path, "/app/filter.py")
+        self.assertEqual(action.content, "print('ok')\n")
+
+    def test_c006_meaningful_checks_are_class_specific(self):
+        h = self._harness()
+        build_state = AgentState(task_class="build_compile_install")
+        self.assertTrue(h._public_check_is_meaningful(build_state, "which pmars && ldd /usr/local/bin/pmars && /usr/local/bin/pmars -r 1 sample.red"))
+
+        browser_state = AgentState(task_class="browser_security")
+        self.assertFalse(h._public_check_is_meaningful(browser_state, "python3 /app/test_outputs.py"))
+        self.assertTrue(h._public_check_is_meaningful(browser_state, "pytest -q /app/test_outputs.py"))
+
+    async def test_c006_auto_finish_allows_no_output_tasks_after_meaningful_check(self):
+        h = self._harness()
+        state = AgentState(task_class="build_compile_install", last_mutation_step=2, last_verification_step=3)
+        state.public_checks.append(
+            PublicCheck(step=3, command="which pmars && ldd /usr/local/bin/pmars && /usr/local/bin/pmars -r 1 sample.red", exit_code=0, passed=True, evidence="/usr/local/bin/pmars\nldd ok\nresults: ok", after_last_mutation=True)
+        )
+        gate = await h._auto_finish_gate(_FakeEnv(), state, parse_action('{"action":"shell","command":"which pmars && ldd /usr/local/bin/pmars && /usr/local/bin/pmars -r 1 sample.red"}'))
+        self.assertIsNotNone(gate)
+        self.assertTrue(gate.ok)
+
+    def test_c006_forces_missing_deliverable_after_gate_check_for_browser(self):
+        h = self._harness()
+        state = AgentState(task_class="browser_security", action_calls=5, last_required_output_check_step=4)
+        state.required_outputs.append(RequiredOutput(path="/app/out.html", source="test", exists=False, checked_step=4))
+        msg = h._artifact_contract_message(state)
+        self.assertIn("next action must create", msg)
+        self.assertTrue(h._violates_artifact_contract(state, parse_action('{"action":"read_file","path":"/app/filter.py"}')))
+        self.assertFalse(h._violates_artifact_contract(state, parse_action('{"action":"write_file","path":"/app/out.html","content":"<p>x</p>"}')))
+
+
+
+    def test_c006_simple_file_forces_write_after_failed_runtime_probe(self):
+        h = self._harness()
+        state = AgentState(task_class="simple_file", action_calls=1, last_mutation_step=0)
+        state.required_outputs.append(RequiredOutput(path="/app/regex.txt", source="test"))
+        state.public_checks.append(PublicCheck(step=1, command="python3 --version", exit_code=127, passed=False, evidence="not found", after_last_mutation=True))
+        self.assertIn("Stop probing", h._artifact_contract_message(state))
+        self.assertTrue(h._violates_artifact_contract(state, parse_action('{"action":"shell","command":"python3 --version"}')))
+        self.assertFalse(h._violates_artifact_contract(state, parse_action('{"action":"write_file","path":"/app/regex.txt","content":"x"}')))
+
+    async def test_c006_build_gate_rejects_makefile_grep_as_finish_check(self):
+        h = self._harness()
+        state = AgentState(task_class="build_compile_install", last_mutation_step=2, last_verification_step=3)
+        state.public_checks.append(PublicCheck(step=3, command="grep -i x11 Makefile", exit_code=0, passed=True, evidence="x11 text", after_last_mutation=True))
+        gate = await h._pre_finish_gate(_FakeEnv(), state, "test")
+        self.assertFalse(gate.ok)
+        self.assertIn("behavioral", gate.reason)
+
+    async def test_c006_build_gate_accepts_install_and_smoke_evidence(self):
+        h = self._harness()
+        state = AgentState(task_class="build_compile_install", last_mutation_step=2, last_verification_step=3)
+        cmd = "which pmars && ldd /usr/local/bin/pmars && pmars -b -r 50 -f flashpaper.red rave.red | tail -n 1"
+        ev = "purpose=smoke\ncommand=" + cmd + "\nexit_code=0\nstdout:\n/usr/local/bin/pmars\nResults: 1 2 3\nstderr:\n"
+        state.public_checks.append(PublicCheck(step=3, command=cmd, exit_code=0, passed=True, evidence=ev, after_last_mutation=True))
+        gate = await h._pre_finish_gate(_FakeEnv(), state, "test")
+        self.assertTrue(gate.ok)
+
+    def test_c006_regex_output_stays_simple_file_even_with_parse_wording(self):
+        budget = classify_task_budget(
+            "Write a regex expression. Save your regex in /app/regex.txt. The regex will be read from the file and applied to log file contents using Python re.findall.",
+            60, 840, 120, 240,
+        )
+        self.assertEqual(budget.task_class, "simple_file")
+
+    def test_c006_cancel_async_instruction_classifies_as_code_debug(self):
+        budget = classify_task_budget(
+            "Create a Python function called async run_tasks(tasks: list[Callable[[], Awaitable[None]]], max_concurrent: int) -> None. Put the function in /app/run.py. Feel free to install packages if you need to. Sometimes I cancel runs via keyboard interrupt but I want cleanup code to still run.",
+            60, 840, 120, 240,
+        )
+        self.assertEqual(budget.task_class, "code_debug")
+
+    async def test_c006_browser_finish_rejects_dummy_html(self):
+        h = self._harness()
+        state = AgentState(task_class="browser_security", last_mutation_step=2, last_verification_step=3)
+        state.required_outputs.append(RequiredOutput(path="/app/out.html", source="test", exists=False))
+        state.public_checks.append(PublicCheck(step=3, command="python3 -c 'print(\"alert\")'", exit_code=0, passed=True, evidence="alert", after_last_mutation=True))
+        gate = await h._pre_finish_gate(_FakeEnv([_Result("/app/out.html 31 bytes\n---\n<html><body>Hello</body></html>", return_code=0)]), state, "test")
+        self.assertFalse(gate.ok)
+        self.assertIn("dummy", gate.reason)
 
     def test_required_output_extraction_handles_create_filter_but_not_tests(self):
         instruction = """
