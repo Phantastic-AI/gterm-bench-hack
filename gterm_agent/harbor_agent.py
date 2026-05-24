@@ -344,7 +344,9 @@ class GeminiDirectAgent(BaseAgent):
         missing = [ro.path for ro in state.required_outputs if not ro.exists and ro.path not in state.touched_files]
         if not missing:
             return None
-        force_classes = {"simple_file", "answer_requires_computation", "data_query", "binary_reverse"}
+        force_classes = {"simple_file", "answer_requires_computation", "data_query"}
+        if state.task_class == "binary_reverse" and state.action_calls >= 4:
+            force_classes.add("binary_reverse")
         if state.task_class == "simple_file" and state.last_mutation_step == 0 and (state.action_calls >= 1 or _latest_failed_optional_runtime_probe(state)):
             state.artifact_contract_repairs += 1
             paths = ", ".join(missing)
@@ -357,6 +359,8 @@ class GeminiDirectAgent(BaseAgent):
             )
         if state.last_required_output_check_step and missing:
             if _has_trait(state, "html_sanitizer") and state.action_calls < 5 and not _latest_failed_optional_runtime_probe(state):
+                return None
+            if state.task_class == "binary_reverse" and state.action_calls < 4:
                 return None
             state.artifact_contract_repairs += 1
             paths = ", ".join(missing)
@@ -383,7 +387,9 @@ class GeminiDirectAgent(BaseAgent):
     def _violates_artifact_contract(self, state: AgentState, action: AgentAction) -> bool:
         if not state.required_outputs:
             return False
-        force_classes = {"simple_file", "answer_requires_computation", "data_query", "binary_reverse"}
+        force_classes = {"simple_file", "answer_requires_computation", "data_query"}
+        if state.task_class == "binary_reverse" and (state.action_calls >= 4 or state.artifact_contract_repairs > 0):
+            force_classes.add("binary_reverse")
         if _has_trait(state, "html_sanitizer") and (state.action_calls >= 5 or _latest_failed_optional_runtime_probe(state)):
             force_classes = force_classes | {state.task_class}
         if state.task_class not in force_classes:

@@ -404,6 +404,23 @@ class HarnessStateMachineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("binary_reverse", gate.reason)
         self.assertNotIn("build_compile_install", gate.reason)
 
+    def test_c007_binary_reverse_allows_early_binary_inspection_before_artifact_force(self):
+        h = self._harness()
+        state = AgentState(task_class="binary_reverse", task_traits=["binary_reverse"], action_calls=2, last_required_output_check_step=2)
+        state.required_outputs.append(RequiredOutput(path="/app/extract.js", source="instruction_regex", exists=False, checked_step=2))
+
+        self.assertIsNone(h._artifact_contract_message(state))
+        self.assertFalse(h._violates_artifact_contract(state, parse_action('{"action":"shell","command":"readelf -l a.out"}')))
+
+    def test_c007_binary_reverse_forces_artifact_after_initial_inspection_budget(self):
+        h = self._harness()
+        state = AgentState(task_class="binary_reverse", task_traits=["binary_reverse"], action_calls=4, last_required_output_check_step=2)
+        state.required_outputs.append(RequiredOutput(path="/app/extract.js", source="instruction_regex", exists=False, checked_step=2))
+
+        self.assertIn("Artifact contract repair", h._artifact_contract_message(state))
+        self.assertTrue(h._violates_artifact_contract(state, parse_action('{"action":"shell","command":"readelf -l a.out"}')))
+        self.assertFalse(h._violates_artifact_contract(state, parse_action('{"action":"write_file","path":"/app/extract.js","content":"console.log(1)"}')))
+
     async def test_c007_binary_finish_accepts_json_validated_extractor_run(self):
         h = self._harness()
         state = AgentState(task_class="binary_reverse", task_traits=["binary_reverse"], last_mutation_step=2, last_verification_step=3)
