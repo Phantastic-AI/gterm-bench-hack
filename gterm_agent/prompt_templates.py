@@ -65,7 +65,7 @@ def render_turn_context(
 
 RUNTIME_STATE:
 state={json.dumps(context, ensure_ascii=False, indent=2)}
-goal_mode=C006_hybrid_scoring single-action loop with broad task-class gates, compact host-side ledger, and deterministic finish gates
+goal_mode=C007_trait_self_audit single-action loop with broad task-class gates, compact host-side ledger, and deterministic finish gates
 remaining_actions={remaining_actions}
 remaining_shell_calls={remaining_shell}
 remaining_time_sec={remaining_time}
@@ -91,7 +91,12 @@ FRESHNESS_REQUIREMENTS:
 TASK_POLICY:
 {task_policy}
 
-C006_SINGLE_ACTION_GUIDANCE:
+TASK_TRAITS:
+{json.dumps(getattr(state, "task_traits", []), ensure_ascii=False)}
+MODEL_PROFILE:
+{getattr(state, "model_profile", "generic")}
+
+C007_SINGLE_ACTION_GUIDANCE:
 - Return exactly one observable action per turn. Do not use transaction.
 - Put concise plan/debug/decision state in the ledger field; the runtime records host-side trace artifacts.
 - Use write_file_b64 for code, HTML, SQL, or regex content if raw JSON escaping is brittle.
@@ -109,9 +114,20 @@ C006_SINGLE_ACTION_GUIDANCE:
 
 
 def _task_policy(state: AgentState) -> str:
+    trait_notes = []
+    traits = set(getattr(state, "task_traits", []))
+    if "async_cancel" in traits:
+        trait_notes.append("Trait async_cancel: cancellation must let every already-started task run its cleanup/finally path; tests should cancel the outer runner and count cleanup for all active workers.")
+    if "html_sanitizer" in traits:
+        trait_notes.append("Trait html_sanitizer: check non-script JavaScript vectors too: event handlers, javascript: URLs, svg/onload/animate, iframes, and benign content preservation.")
+    if "download_source" in traits:
+        trait_notes.append("Trait download_source: if a source package is requested, preserve package metadata/debian directory when possible; do not silently switch to unrelated upstream tarballs.")
+    if "git_repair" in traits:
+        trait_notes.append("Trait git_repair: after conflict resolution run git status --porcelain and compare recovered/patch files when visible before finish.")
+    prefix = ("\n".join(trait_notes) + "\n") if trait_notes else ""
     if state.task_class == "simple_file":
         required_paths = ", ".join(ro.path for ro in state.required_outputs) or "the requested output path"
-        return (
+        return prefix + (
             "Class simple_artifact/simple_file: write the requested artifact early. You are in a minimal Terminal-Bench "
             "container; do not assume Python/Node/package managers/compilers/network exist. Prefer POSIX shell and "
             "write_file/write_file_b64. Do not burn steps probing optional interpreters. If the answer can be derived "
@@ -120,48 +136,48 @@ def _task_policy(state: AgentState) -> str:
         )
     if state.task_class == "answer_requires_computation":
         required_paths = ", ".join(ro.path for ro in state.required_outputs) or "the requested answer file"
-        return (
+        return prefix + (
             "Class answer_requires_computation: do not guess or write 0/empty without evidence. First identify and inspect "
             "the relevant input data, then run a visible computation with POSIX tools or an available runtime, write "
             f"the supported answer to {required_paths}, and verify the answer file plus the computation log before finish."
         )
     if state.task_class == "build_compile_install":
-        return (
+        return prefix + (
             "Class build_compile_install: progress milestones are source/package located, dependencies identified, build attempted, "
             "new compiler/linker error understood, patch applied, build succeeds, install target exists, and smoke command runs. "
             "Do not abort just because package probing fails; inspect visible source trees and README/Makefile files. Finish only after "
             "the requested binary/install target is present and a direct smoke/which/ldd/run check passes."
         )
     if state.task_class == "git_repair":
-        return (
+        return prefix + (
             "Class git_repair: first locate the target repo and inspect status/log/reflog/branches. A failed merge or cherry-pick can still "
             "mutate the worktree; resolve conflicts, git add, commit when appropriate, and verify git status --porcelain is empty. If "
             "/app/resources/patch_files exists, compare each patch file to the corresponding repo file. Finish only after a fresh git "
             "status/diff/test check proves the repo is clean and the requested recovered changes are present."
         )
     if state.task_class == "code_debug":
-        return (
+        return prefix + (
             "Class code_debug: file existence is not enough. Inspect the implicated source, make the smallest behavior patch, "
             "and run a focused behavioral check (pytest/unittest/CLI/import/smoke as available). If a check fails, reflect once "
             "on the exact assertion and then patch/rerun. Finish only after fresh passing behavior evidence."
         )
     if state.task_class == "browser_security":
-        return (
+        return prefix + (
             "Class browser_security: generic harmless HTML is not success. Preserve required benign content while checking adversarial "
             "payload behavior. Run or create a local check for script/event-handler/javascript: removal or payload execution as the "
             "task requires. Barely executing a file that only defines tests is not enough; use pytest/browser/adversarial assertions."
         )
     if state.task_class == "data_query":
-        return (
+        return prefix + (
             "Class data_query: use the exact required SQL/query filename, inspect schema/data, execute or parse the query against "
             "available DB files, and verify sample rows/counts or EXPLAIN output when relevant. Do not finish with SQL-ish text only."
         )
     if state.task_class == "binary_reverse":
-        return (
+        return prefix + (
             "Class binary_reverse: inspect the binary with file/readelf/objdump/strings or available scripts, run extraction against "
             "the binary, validate output format, and avoid treating helper/input filenames as deliverables."
         )
-    return (
+    return prefix + (
         "Assume a minimal Terminal-Bench container. Prefer POSIX shell primitives before optional runtimes; "
         "only probe/install language tools when the task clearly requires them or visible files justify it."
     )

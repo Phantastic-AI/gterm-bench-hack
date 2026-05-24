@@ -45,7 +45,7 @@ _install_harbor_stubs()
 
 from gterm_agent.harbor_agent import GeminiDirectAgent, _json_obj_from_text  # noqa: E402
 from gterm_agent.shell_protocol import parse_action  # noqa: E402
-from gterm_agent.state import AgentState, PublicCheck, RequiredOutput, classify_task_budget, extract_required_outputs  # noqa: E402
+from gterm_agent.state import AgentState, PublicCheck, RequiredOutput, classify_task_budget, extract_required_outputs, infer_model_profile, infer_task_traits  # noqa: E402
 
 
 @dataclass
@@ -169,6 +169,22 @@ class HarnessStateMachineTests(unittest.IsolatedAsyncioTestCase):
             60, 840, 120, 240,
         )
         self.assertEqual(budget.task_class, "git_repair")
+
+    def test_c007_traits_are_composable_and_model_profile_is_swappable(self):
+        instruction = "Download the Debian source package, build it from source, install the binary to /usr/local/bin/tool, and commit the git fix."
+        budget = classify_task_budget(instruction, 60, 840, 120, 240)
+        traits = infer_task_traits(instruction, [], budget.task_class)
+        self.assertIn("build_install", traits)
+        self.assertIn("download_source", traits)
+        self.assertIn("git_repair", traits)
+        self.assertEqual(infer_model_profile("google/gemini-3.5-flash"), "gemini_flash")
+        self.assertEqual(infer_model_profile("anthropic/claude-opus-4.6"), "claude")
+
+    def test_c007_meaningful_checks_union_over_traits(self):
+        h = self._harness()
+        state = AgentState(task_class="build_compile_install", task_traits=["build_compile_install", "build_install", "git_repair"])
+        self.assertTrue(h._public_check_is_meaningful(state, "git status --porcelain=v1 && git diff --check"))
+        self.assertTrue(h._public_check_is_meaningful(state, "which pmars && ldd /usr/local/bin/pmars && pmars -r 1 sample.red"))
 
     async def test_c006_git_repair_gate_rejects_dirty_repo(self):
         h = self._harness()

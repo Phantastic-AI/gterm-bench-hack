@@ -19,8 +19,8 @@ Phase = Literal[
     "ABORT",
 ]
 
-CANDIDATE_ID = "C006_hybrid_scoring"
-AGENT_VERSION = "0.6.1-c006-hybrid-scoring"
+CANDIDATE_ID = "C007_trait_self_audit"
+AGENT_VERSION = "0.7.0-c007-trait-self-audit"
 MAX_PROMPT_TOKENS_BEFORE_COMPACT = 80_000
 PROMPT_CHAR_BUDGET = MAX_PROMPT_TOKENS_BEFORE_COMPACT * 4
 
@@ -131,6 +131,8 @@ class AgentState:
     no_progress_count: int = 0
     abort_reason: str = ""
     task_class: str = "unknown"
+    task_traits: list[str] = field(default_factory=list)
+    model_profile: str = "generic"
     task_budget: dict[str, Any] = field(default_factory=dict)
     action_fingerprints: dict[str, int] = field(default_factory=dict)
     last_action_fingerprint: str = ""
@@ -236,6 +238,39 @@ def classify_task_budget(instruction: str, requested_max_steps: int, requested_w
         rationale=why,
     )
 
+
+
+def infer_task_traits(instruction: str, required_outputs: list[RequiredOutput], task_class: str = "unknown") -> list[str]:
+    """Infer composable task traits from instruction text only; no task-name lookup."""
+    text = instruction.lower()
+    traits: list[str] = []
+
+    def add(name: str, cond: bool = True) -> None:
+        if cond and name not in traits:
+            traits.append(name)
+
+    add(task_class, task_class != "unknown")
+    add("git_repair", any(k in text for k in ("git", "reflog", "lost commit", "merge conflict", "unmerged", "branch", "commit")) and any(k in text for k in ("fix", "recover", "restore", "merge", "lost", "conflict", "commit", "branch")))
+    add("download_source", any(k in text for k in ("download", "apt-get source", "source package", "fetch", "curl", "wget", "from source", "debian package")))
+    add("build_install", task_class == "build_compile_install" or any(k in text for k in ("/usr/local/bin", "build", "compile", "install the binary", "makefile")))
+    add("async_cancel", any(k in text for k in ("async", "cancel", "cancelled", "keyboard interrupt", "max_concurrent", "cleanup")))
+    add("html_sanitizer", any(k in text for k in ("html", "javascript", "script", "event handler", "xss", "sanitize", "alert", "browser")))
+    add("simple_artifact", bool(required_outputs) and task_class == "simple_file")
+    add("answer_file", any(path.path.endswith(("answer.txt", "out.txt", "out.json")) for path in required_outputs))
+    return traits
+
+
+def infer_model_profile(model_name: str) -> str:
+    low = model_name.lower()
+    if "gemini" in low and "flash" in low:
+        return "gemini_flash"
+    if "gemini" in low:
+        return "gemini"
+    if "claude" in low:
+        return "claude"
+    if "gpt" in low or "openai" in low:
+        return "openai"
+    return "generic"
 
 def compact_text(text: str, max_chars: int) -> str:
     text = text or ""

@@ -23,6 +23,8 @@ from .state import (
     action_fingerprint,
     classify_task_budget,
     compact_text,
+    infer_model_profile,
+    infer_task_traits,
     extract_required_outputs,
     is_passive_action,
     is_public_check_command,
@@ -51,7 +53,7 @@ class GeminiDirectAgent(BaseAgent):
         model = self.model_name or "google/gemini-3.5-flash"
         self.gemini_model = model.split("/", 1)[1] if model.startswith("google/") else model
         self.trace: TraceWriter | None = None
-        self.system_prompt = load_system_prompt() + "\n\nC006.1 runtime addendum: use a tight single-action coding-agent loop. Return exactly one observable action per turn. Do not use broad transaction actions; the runtime will reject them. Keep plan/debug/decision state in concise ledger text and host-side traces. Finish only through deterministic class gates: required paths, fresh meaningful checks, and no unrepaired failures. Semantic critic approval is not a completion signal."
+        self.system_prompt = load_system_prompt() + "\n\nC007 runtime addendum: use a tight single-action coding-agent loop. Return exactly one observable action per turn. Do not use broad transaction actions; the runtime will reject them. Keep plan/debug/decision state in concise ledger text and host-side traces. Finish only through deterministic class gates: required paths, fresh meaningful checks, and no unrepaired failures. Semantic critic approval is not a completion signal."
 
     @staticmethod
     def name() -> str:
@@ -73,13 +75,15 @@ class GeminiDirectAgent(BaseAgent):
         state.task_class = budget.task_class
         state.task_budget = budget.__dict__.copy()
         state.required_outputs = extract_required_outputs(instruction)
+        state.task_traits = infer_task_traits(instruction, state.required_outputs, state.task_class)
+        state.model_profile = infer_model_profile(self.gemini_model)
         state.plan_doc = {
             "goal": "Solve the Terminal-Bench task using visible files, local commands, and fresh checks.",
             "current_hypothesis": "Initial environment inspection is required.",
             "next_check": "Inspect working directory and task-relevant files.",
             "fallback_if_fails": "Replan around missing tools/files using available POSIX primitives.",
         }
-        state.add_ledger(f"Initialized C006 {budget.task_class} budget: steps={budget.max_steps}, shell={budget.max_shell_calls}, wall={budget.max_wall_time_sec}s, outputs={len(state.required_outputs)}.")
+        state.add_ledger(f"Initialized C007 {budget.task_class} traits={state.task_traits} model_profile={state.model_profile} budget: steps={budget.max_steps}, shell={budget.max_shell_calls}, wall={budget.max_wall_time_sec}s, outputs={len(state.required_outputs)}.")
         self.trace = TraceWriter(self.logs_dir, candidate_id=CANDIDATE_ID, model=self.gemini_model, run_id=environment.session_id)
         self.trace.write_task(instruction)
         client = GeminiClient(model=self.gemini_model)
@@ -150,7 +154,7 @@ class GeminiDirectAgent(BaseAgent):
                     state.abort_reason = stop_reason
                     break
                 state.parse_repair_attempts += 1
-                forced_message = f"Your last response was invalid but C006 will recover if you comply: {redact_text(err)}. Return exactly one JSON object using the single-action protocol. Use write_file_b64 for code/HTML/SQL/regex if JSON escaping is brittle. Do not use transaction. Escape newlines inside JSON strings as \\n; no markdown."
+                forced_message = f"Your last response was invalid but C007 will recover if you comply: {redact_text(err)}. Return exactly one JSON object using the single-action protocol. Use write_file_b64 for code/HTML/SQL/regex if JSON escaping is brittle. Do not use transaction. Escape newlines inside JSON strings as \\n; no markdown."
                 last_action_result = forced_message
                 continue
 
@@ -192,11 +196,11 @@ class GeminiDirectAgent(BaseAgent):
                 continue
 
             if action.action == "transaction":
-                state.add_ledger("C006 rejected broad transaction; single observable action required")
+                state.add_ledger("C007 rejected broad transaction; single observable action required")
                 if self.trace:
-                    self.trace.event("transaction_rejected", step=step, reason="C006 single-action policy")
+                    self.trace.event("transaction_rejected", step=step, reason="C007 single-action policy")
                 forced_message = (
-                    "C006 disables broad transactions because they hide intermediate failures. "
+                    "C007 disables broad transactions because they hide intermediate failures. "
                     "Return exactly one single action now: read_file, write_file/write_file_b64, list_files, shell, finish, or abort. "
                     "Put your plan/debug/decision note in the ledger field. Do not use transaction again."
                 )
@@ -216,12 +220,22 @@ class GeminiDirectAgent(BaseAgent):
                     last_action_result = forced_message
                     continue
                 gate = await self._pre_finish_gate(environment, state, action.message or action.reason)
-                # C006: deterministic gate approval is sufficient; semantic critic cannot approve completion.
+                # C007: deterministic gate approval is sufficient; semantic critic cannot approve completion.
                 if self.trace:
                     self.trace.critic_gate(step, gate.to_dict())
                 if gate.ok:
+                    audit_gate = await self._pre_finish_self_audit(client, instruction, state)
+                    if audit_gate is not None and not audit_gate.ok:
+                        if self.trace:
+                            self.trace.critic_gate(step, audit_gate.to_dict())
+                        state.phase = "REPAIR"
+                        state.repair_hypotheses.append(audit_gate.reason)
+                        state.add_ledger(f"Finish rejected: {audit_gate.reason}")
+                        forced_message = audit_gate.repair_prompt()
+                        last_action_result = forced_message
+                        continue
                     status = "finish"
-                    stop_reason = action.message or action.reason or "C006 pre-finish gate passed"
+                    stop_reason = action.message or action.reason or "C007 pre-finish gate passed"
                     state.phase = "FINISH"
                     break
                 state.phase = "REPAIR"
@@ -244,12 +258,20 @@ class GeminiDirectAgent(BaseAgent):
             forced_message = forced_message or self._behavior_repair_message(state)
             auto_gate = await self._auto_finish_gate(environment, state, action)
             if auto_gate is not None:
-                # C006: auto-finish uses deterministic runtime gates, not semantic self-approval.
+                # C007: auto-finish uses deterministic runtime gates, not semantic self-approval.
                 if self.trace:
                     self.trace.critic_gate(step, auto_gate.to_dict())
                 if auto_gate.ok:
+                    audit_gate = await self._pre_finish_self_audit(client, instruction, state)
+                    if audit_gate is not None and not audit_gate.ok:
+                        if self.trace:
+                            self.trace.critic_gate(step, audit_gate.to_dict())
+                        state.add_ledger(f"Auto-finish self-audit rejected: {audit_gate.reason}")
+                        forced_message = audit_gate.repair_prompt()
+                        last_action_result = forced_message
+                        continue
                     status = "finish"
-                    stop_reason = f"C006 auto-finish: {auto_gate.reason}"
+                    stop_reason = f"C007 auto-finish: {auto_gate.reason}"
                     state.phase = "FINISH"
                     break
                 state.add_ledger(f"Auto-finish gate not ready: {auto_gate.reason}")
@@ -518,6 +540,17 @@ PASS only if the touched artifacts plausibly solve the task and the latest relev
             state.latest_semantic_critic = {"verdict": "repair", "reason": reason}
             return GateResult(False, reason, evidence=["critic_error"])
 
+    async def _pre_finish_self_audit(self, client: GeminiClient, instruction: str, state: AgentState) -> GateResult | None:
+        if state.task_class == "simple_file":
+            return None
+        if state.semantic_critic_calls >= 1:
+            return None
+        audit = await self._semantic_finish_critic(client, instruction, state)
+        if audit.ok:
+            state.add_ledger("Self-audit passed before finish")
+            return None
+        return audit
+
     async def _read_file(self, environment: BaseEnvironment, step: int, action: AgentAction, state: AgentState) -> str:
         path = action.path or "/app"
         max_bytes = action.max_bytes
@@ -605,35 +638,36 @@ PASS only if the touched artifacts plausibly solve the task and the latest relev
             if not latest_check_fresh and not wrote_required:
                 return None
         else:
-            # C006: non-simple classes need fresh behavioral evidence. This also lets
+            # C007: non-simple classes need fresh behavioral evidence. This also lets
             # no-output tasks like git/build tasks finish immediately after a real check.
             if not latest_check_fresh:
                 return None
             if not self._public_check_is_meaningful(state, latest_check.command if latest_check else ""):
                 return GateResult(False, f"{state.task_class} requires a meaningful behavioral public check before auto-finish")
-        gate = await self._pre_finish_gate(environment, state, "C006 auto-finish after fresh objective evidence")
+        gate = await self._pre_finish_gate(environment, state, "C007 auto-finish after fresh objective evidence")
         return gate
 
     def _public_check_is_meaningful(self, state: AgentState, command: str) -> bool:
         cmd = command.lower()
         if state.task_class == "simple_file":
             return True
+        checks: list[bool] = []
         if state.task_class == "answer_requires_computation":
-            return any(k in cmd for k in ("awk", "python", "python3", "wc ", "jq", "sqlite3", "grep", "cut", "sort", "uniq", "answer.txt"))
-        if state.task_class == "build_compile_install":
-            return any(k in cmd for k in ("/usr/local/bin/", "which ", "ldd ", " pmars ", "pmars -", "tail -n", "dpkg -L"))
+            checks.append(any(k in cmd for k in ("awk", "python", "python3", "wc ", "jq", "sqlite3", "grep", "cut", "sort", "uniq", "answer.txt")))
+        if _has_trait(state, "build_install"):
+            checks.append(any(k in cmd for k in ("/usr/local/bin/", "which ", "ldd ", " pmars ", "pmars -", "tail -n", "dpkg -L")))
         if state.task_class == "data_query":
-            return any(k in cmd for k in ("sol.sql", "my-sql-query.sql", "sqlite3", "explain", "select", "pytest"))
-        if state.task_class == "git_repair":
-            return any(k in cmd for k in ("git status", "git diff", "git log", "git reflog", "git branch", "pytest", "cmp ", "md5sum", "sha1sum"))
-        if state.task_class == "browser_security":
-            # Bare execution of a test module that only defines tests is not enough;
-            # require a real test runner/browser/adversarial payload signal.
-            return any(k in cmd for k in ("pytest", "selenium", "chrome", "chromium", "alert", "playwright", "onerror", "javascript:"))
+            checks.append(any(k in cmd for k in ("sol.sql", "my-sql-query.sql", "sqlite3", "explain", "select", "pytest")))
+        if _has_trait(state, "git_repair"):
+            checks.append(any(k in cmd for k in ("git status", "git diff", "git log", "git reflog", "git branch", "pytest", "cmp ", "md5sum", "sha1sum")))
+        if _has_trait(state, "html_sanitizer"):
+            checks.append(any(k in cmd for k in ("pytest", "selenium", "chrome", "chromium", "alert", "playwright", "onerror", "javascript:", "svg", "iframe")))
         if state.task_class == "binary_reverse":
-            return any(k in cmd for k in ("readelf", "objdump", "file ", "strings", "node ", "python", "jq", "./"))
+            checks.append(any(k in cmd for k in ("readelf", "objdump", "file ", "strings", "node ", "python", "jq", "./")))
         if state.task_class == "code_debug":
-            return any(k in cmd for k in ("pytest", "npm test", "yarn test", "pnpm test", "python -m", "python3 -m", "python -c", "python3 -c", "./test", "go test", "cargo test", "make test", "unittest"))
+            checks.append(any(k in cmd for k in ("pytest", "npm test", "yarn test", "pnpm test", "python -m", "python3 -m", "python -c", "python3 -c", "./test", "go test", "cargo test", "make test", "unittest")))
+        if checks:
+            return any(checks)
         return any(k in cmd for k in ("test", "pytest", "check", "verify", "make", "./"))
 
 
@@ -677,7 +711,7 @@ PASS only if the touched artifacts plausibly solve the task and the latest relev
             return GateResult(False, "required output path(s) missing", missing_outputs=missing, stale_verification=stale_verification, no_public_check=no_public_check, evidence=evidence)
         if state.denied_actions:
             return GateResult(False, "denied unsafe/invalid action occurred", stale_verification=stale_verification, no_public_check=no_public_check, evidence=evidence)
-        if state.task_class == "browser_security" and any(_browser_output_looks_dummy(ro) for ro in state.required_outputs if ro.path.endswith((".html", ".htm"))):
+        if _has_trait(state, "html_sanitizer") and any(_browser_output_looks_dummy(ro) for ro in state.required_outputs if ro.path.endswith((".html", ".htm"))):
             return GateResult(False, "browser_security output is generic/dummy HTML, not adversarial or behavior-relevant", stale_verification=stale_verification, no_public_check=no_public_check, evidence=evidence)
         if state.task_class != "simple_file":
             latest_check = state.public_checks[-1] if state.public_checks else None
@@ -685,9 +719,9 @@ PASS only if the touched artifacts plausibly solve the task and the latest relev
                 return GateResult(False, f"{state.task_class} requires a fresh passing public/self-check", stale_verification=stale_verification, no_public_check=no_public_check, evidence=evidence)
             if not self._public_check_is_meaningful(state, latest_check.command):
                 return GateResult(False, f"{state.task_class} public/self-check is not behavioral enough", stale_verification=stale_verification, no_public_check=no_public_check, evidence=evidence)
-            if state.task_class == "build_compile_install" and not _build_check_has_install_smoke(latest_check.command, latest_check.evidence):
+            if _has_trait(state, "build_install") and not _build_check_has_install_smoke(latest_check.command, latest_check.evidence):
                 return GateResult(False, "build_compile_install requires installed binary plus direct smoke/ldd/which evidence", stale_verification=stale_verification, no_public_check=no_public_check, evidence=evidence)
-            if state.task_class == "git_repair":
+            if _has_trait(state, "git_repair"):
                 git_gate = await self._git_repair_gate(environment, state, evidence, stale_verification, no_public_check)
                 if not git_gate.ok:
                     return git_gate
@@ -735,6 +769,15 @@ echo GIT_REPAIR_CLEAN'''
         if rc != 0:
             return GateResult(False, "git_repair repo is not clean or recovered patch files do not match", stale_verification=stale_verification, no_public_check=no_public_check, evidence=evidence + [compact_text(obs, 1200)])
         return GateResult(True, "git repair gate passed", stale_verification=stale_verification, no_public_check=no_public_check, evidence=evidence)
+
+
+def _has_trait(state: AgentState, trait: str) -> bool:
+    aliases = {
+        "build_install": {"build_compile_install"},
+        "html_sanitizer": {"browser_security"},
+        "simple_artifact": {"simple_file"},
+    }
+    return trait == state.task_class or state.task_class in aliases.get(trait, set()) or trait in getattr(state, "task_traits", [])
 
 
 def _latest_failed_optional_runtime_probe(state: AgentState) -> bool:
