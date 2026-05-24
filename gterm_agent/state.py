@@ -254,6 +254,7 @@ def infer_task_traits(instruction: str, required_outputs: list[RequiredOutput], 
     add("download_source", any(k in text for k in ("download", "apt-get source", "source package", "fetch", "curl", "wget", "from source", "debian package")))
     add("build_install", task_class == "build_compile_install" or any(k in text for k in ("/usr/local/bin", "build", "compile", "install the binary", "makefile")))
     add("async_cancel", any(k in text for k in ("async", "cancel", "cancelled", "keyboard interrupt", "max_concurrent", "cleanup")))
+    add("keyboard_interrupt_cancel", any(k in text for k in ("keyboard interrupt", "sigint", "ctrl-c", "ctrl+c")) and "cancel" in text)
     add("html_sanitizer", any(k in text for k in ("html", "javascript", "script", "event handler", "xss", "sanitize", "alert", "browser")))
     add("simple_artifact", bool(required_outputs) and task_class == "simple_file")
     add("answer_file", any(path.path.endswith(("answer.txt", "out.txt", "out.json")) for path in required_outputs))
@@ -377,12 +378,17 @@ def extract_required_outputs(instruction: str) -> list[RequiredOutput]:
 
 def _path_has_input_role(line: str, path_start: int) -> bool:
     prefix = line[max(0, path_start - 48):path_start].lower()
-    return any(word in prefix for word in ("given ", "provided ", "using ", "use ", "read ", "input ", "from ", "inside ", "contains "))
+    return any(word in prefix for word in ("given ", "provided ", "using ", "use ", "read ", "input ", "from ", "inside ", "contains ", "processed by ", "run with "))
 
 
 def _path_has_output_role(line: str, path_start: int) -> bool:
     prefix = line[max(0, path_start - 48):path_start].lower()
-    return any(word in prefix for word in ("save ", "write ", "create ", "output ", "store ", "put ", "place ", "submit ", "final ", "result ", "named ", "called ", "fix ", "modify ", "edit ", "craft ", "payload ", "bypass ", "break "))
+    suffix_before_redirect = line[path_start: line.find(">", path_start) if ">" in line[path_start:] else len(line)].lower()
+    if ">" in line and path_start < line.find(">") and not any(w in prefix for w in ("write ", "create ", "save ", "program ", "script ", "file called ", "file named ")):
+        return False
+    if ">" in line and path_start > line.find(">") and not any(w in prefix for w in ("write ", "create ", "save ", "output ", "store ")):
+        return False
+    return any(word in prefix for word in ("save ", "write ", "create ", "output ", "store ", "put ", "place ", "submit ", "final ", "result ", "named ", "called ", "file called ", "file named ", "program ", "script ", "fix ", "modify ", "edit ", "craft ", "payload ", "bypass ", "break "))
 
 
 def is_public_check_command(command: str, purpose: str = "") -> bool:

@@ -119,6 +119,14 @@ class HarnessStateMachineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(h._artifact_contract_message(state))
         self.assertFalse(h._violates_artifact_contract(state, parse_action('{"action":"read_file","path":"/app/filter.py"}')))
 
+    def test_c007_browser_security_forces_artifact_after_repeated_exploration(self):
+        h = self._harness()
+        state = AgentState(task_class="browser_security", task_traits=["browser_security", "html_sanitizer"], action_calls=8, last_required_output_check_step=7)
+        state.required_outputs.append(RequiredOutput(path="/app/out.html", source="test", exists=False, checked_step=7))
+        self.assertIn("Artifact contract repair", h._artifact_contract_message(state))
+        self.assertTrue(h._violates_artifact_contract(state, parse_action('{"action":"read_file","path":"/app/test_outputs.py"}')))
+        self.assertFalse(h._violates_artifact_contract(state, parse_action('{"action":"write_file","path":"/app/out.html","content":"<svg onload=alert(1)>"}')))
+
     async def test_c007_browser_finish_requires_real_browser_execution(self):
         h = self._harness()
         state = AgentState(task_class="browser_security", task_traits=["browser_security", "html_sanitizer"], last_mutation_step=2, last_verification_step=3)
@@ -178,6 +186,18 @@ class HarnessStateMachineTests(unittest.IsolatedAsyncioTestCase):
         state = AgentState(task_class="code_debug", task_traits=["code_debug", "async_cancel"], last_mutation_step=2, last_verification_step=3)
         evidence = "exit_code=0\nstdout:\nstarted_count=2 cleanup_count=2 cancelled_count=2 cleanup_assertion_passed"
         state.public_checks.append(PublicCheck(step=3, command="python3 -m unittest /app/test_cancel.py", exit_code=0, passed=True, evidence=evidence, after_last_mutation=True))
+        gate = await h._pre_finish_gate(_FakeEnv(), state, "test")
+        self.assertTrue(gate.ok)
+
+    async def test_c007_keyboard_interrupt_async_requires_sigint_subprocess_evidence(self):
+        h = self._harness()
+        state = AgentState(task_class="code_debug", task_traits=["code_debug", "async_cancel", "keyboard_interrupt_cancel"], last_mutation_step=2, last_verification_step=3)
+        evidence = "exit_code=0\nstdout:\nstarted_count=2 cleanup_count=2 cancelled_count=2 cleanup_assertion_passed"
+        state.public_checks.append(PublicCheck(step=3, command="python3 /app/test_cancel.py", exit_code=0, passed=True, evidence=evidence, after_last_mutation=True))
+        gate = await h._pre_finish_gate(_FakeEnv(), state, "test")
+        self.assertFalse(gate.ok)
+        evidence += "\nsigint_subprocess_passed"
+        state.public_checks[-1] = PublicCheck(step=3, command="python3 /app/test_cancel.py", exit_code=0, passed=True, evidence=evidence, after_last_mutation=True)
         gate = await h._pre_finish_gate(_FakeEnv(), state, "test")
         self.assertTrue(gate.ok)
 
@@ -328,6 +348,16 @@ class HarnessStateMachineTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("/app/a.out", paths)
         self.assertIn("/app/extract.js", paths)
         self.assertIn("/app/out.json", paths)
+
+    def test_c007_extract_required_outputs_skips_command_inputs_and_redirect_outputs(self):
+        instruction = "Write me a program extract.js that, when run with `node extract.js /app/a.out > out.json`, outputs JSON."
+        paths = [output.path for output in extract_required_outputs(instruction)]
+        self.assertEqual(paths, ["/app/extract.js"])
+
+    def test_c007_browser_required_outputs_skip_processed_helper_script(self):
+        instruction = "Your task is to create a file called /app/out.html that, even after being processed by /app/filter.py, will still trigger alert()."
+        paths = [output.path for output in extract_required_outputs(instruction)]
+        self.assertEqual(paths, ["/app/out.html"])
 
     async def test_c007_binary_finish_requires_extractor_run_and_json_validation(self):
         h = self._harness()

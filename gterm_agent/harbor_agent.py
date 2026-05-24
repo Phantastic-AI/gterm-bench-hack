@@ -356,7 +356,7 @@ class GeminiDirectAgent(BaseAgent):
                 "and derive the artifact from the prompt/visible files now."
             )
         if state.last_required_output_check_step and missing:
-            if _has_trait(state, "html_sanitizer"):
+            if _has_trait(state, "html_sanitizer") and state.action_calls < 8:
                 return None
             state.artifact_contract_repairs += 1
             paths = ", ".join(missing)
@@ -376,6 +376,8 @@ class GeminiDirectAgent(BaseAgent):
         if not state.required_outputs:
             return False
         force_classes = {"simple_file", "answer_requires_computation", "data_query", "binary_reverse"}
+        if _has_trait(state, "html_sanitizer") and state.action_calls >= 8:
+            force_classes = force_classes | {state.task_class}
         if state.task_class not in force_classes:
             return False
         required = {ro.path for ro in state.required_outputs}
@@ -756,7 +758,7 @@ PASS only if the touched artifacts plausibly solve the task and the latest relev
                 git_gate = await self._git_repair_gate(environment, state, evidence, stale_verification, no_public_check)
                 if not git_gate.ok:
                     return git_gate
-            if _has_trait(state, "async_cancel") and not _async_check_has_cancel_cleanup(latest_check.command, latest_check.evidence):
+            if _has_trait(state, "async_cancel") and not _async_check_has_cancel_cleanup(latest_check.command, latest_check.evidence, require_sigint=_has_trait(state, "keyboard_interrupt_cancel")):
                 return GateResult(False, "async_cancel requires cancellation cleanup evidence for all started tasks", stale_verification=stale_verification, no_public_check=no_public_check, evidence=evidence)
             if _has_trait(state, "binary_reverse") and not _binary_check_is_output_or_extraction(latest_check.command, latest_check.evidence):
                 return GateResult(False, "binary_reverse requires extraction/output validation evidence", stale_verification=stale_verification, no_public_check=no_public_check, evidence=evidence)
@@ -842,7 +844,7 @@ def _runs_file_backed_python_test(command: str) -> bool:
     return bool(re.search(r"\bpython(?:3(?:\.\d+)?)?\b[^;|&<>\n]*(?:test_[\w./-]+|[\w./-]+_test|tests?)[\w./-]*\.py\b", cmd))
 
 
-def _async_check_has_cancel_cleanup(command: str, evidence: str) -> bool:
+def _async_check_has_cancel_cleanup(command: str, evidence: str, *, require_sigint: bool = False) -> bool:
     cmd = command.lower()
     text = f"{command}\n{evidence}".lower()
     if "echo " in cmd or _command_is_inline_python(command):
@@ -856,6 +858,8 @@ def _async_check_has_cancel_cleanup(command: str, evidence: str) -> bool:
     counts = {name: int(value) for name, value in re.findall(r"(started_count|cleanup_count|cancelled_count)\s*=\s*(\d+)", text)}
     counts_match = counts.get("started_count", 0) >= 1 and counts.get("cleanup_count", -1) >= counts.get("started_count", 0)
     assertion_signal = "cleanup_assertion_passed" in text or "all_started_cleaned=true" in text
+    if require_sigint and "sigint_subprocess_passed" not in text:
+        return False
     return counts_match and assertion_signal
 
 

@@ -118,6 +118,8 @@ def _task_policy(state: AgentState) -> str:
     traits = set(getattr(state, "task_traits", []))
     if "async_cancel" in traits:
         trait_notes.append("Trait async_cancel: cancellation must let every already-started task run its cleanup/finally path; create/run a focused pytest or unittest cancellation test file that starts max_concurrent workers, cancels the outer runner, asserts cleanup for all active workers, and prints structured evidence like started_count=N cleanup_count=N cancelled_count=N plus cleanup_assertion_passed only when all active workers cleaned up.")
+    if "keyboard_interrupt_cancel" in traits:
+        trait_notes.append("Trait keyboard_interrupt_cancel: also verify SIGINT/KeyboardInterrupt behavior with a subprocess-style or signal-style test. The process must let started tasks print/start, run cleanup/finally, avoid starting extra queued work after cancellation, and expose sigint_subprocess_passed only after those assertions pass.")
     if "html_sanitizer" in traits:
         trait_notes.append("Trait html_sanitizer: explore filter behavior first, then write the bypass artifact. Do not append dummy comments just to satisfy artifact existence. Before finish, run a real pytest/Selenium/browser check from a file, not an inline one-liner, that demonstrates the payload still executes after filtering.")
     if "download_source" in traits:
