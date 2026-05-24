@@ -356,7 +356,7 @@ class GeminiDirectAgent(BaseAgent):
                 "and derive the artifact from the prompt/visible files now."
             )
         if state.last_required_output_check_step and missing:
-            if _has_trait(state, "html_sanitizer") and state.action_calls < 8:
+            if _has_trait(state, "html_sanitizer") and state.action_calls < 5 and not _latest_failed_optional_runtime_probe(state):
                 return None
             state.artifact_contract_repairs += 1
             paths = ", ".join(missing)
@@ -376,7 +376,7 @@ class GeminiDirectAgent(BaseAgent):
         if not state.required_outputs:
             return False
         force_classes = {"simple_file", "answer_requires_computation", "data_query", "binary_reverse"}
-        if _has_trait(state, "html_sanitizer") and state.action_calls >= 8:
+        if _has_trait(state, "html_sanitizer") and (state.action_calls >= 5 or _latest_failed_optional_runtime_probe(state)):
             force_classes = force_classes | {state.task_class}
         if state.task_class not in force_classes:
             return False
@@ -881,20 +881,23 @@ def _binary_check_is_output_or_extraction(command: str, evidence: str) -> bool:
     text = f"{command}\n{evidence}".lower()
     if "exit_code=0" not in text and "passed" not in text and " ok" not in text:
         return False
-    if re.match(r"\s*(echo|printf|cat|grep|head|tail)\b", cmd_no_comments):
+    if re.search(r"(?:^|[;&|]\s*)(echo|printf)\b", cmd_no_comments):
         return False
-    ran_extractor = bool(
-        re.search(r"\bnode\s+[^;&|#\n]*extract\.js\b", cmd_no_comments)
-        or re.search(r"\bpython(?:3(?:\.\d+)?)?\s+[^;&|#\n]*extract\.py\b", cmd_no_comments)
-        or re.search(r"(?:^|[;&|]\s*)\./[^;&|#\n]*extract[^;&|#\n]*", cmd_no_comments)
+    extractor_match = re.search(
+        r"(?:\bnode\s+[^;&|#\n]*extract\.js\b|\bpython(?:3(?:\.\d+)?)?\s+[^;&|#\n]*extract\.py\b|(?:^|[;&|]\s*)\./[^;&|#\n]*extract[^;&|#\n]*)[^;&|#\n]*>\s*(?P<json>[^\s;&|#]+\.json)",
+        cmd_no_comments,
     )
+    if not extractor_match:
+        return False
+    json_path = re.escape(extractor_match.group("json"))
     validated_output = bool(
-        re.search(r"(?:^|[;&|]\s*)jq\s+[^;&|#\n]*/?out\.json\b", cmd_no_comments)
-        or re.search(r"\bpython(?:3(?:\.\d+)?)?\s+-m\s+json\.tool\s+[^;&|#\n]*/?out\.json\b", cmd_no_comments)
-        or ("node -e" in cmd_no_comments and "json.parse" in cmd_no_comments and "out.json" in cmd_no_comments)
+        re.search(rf"(?:^|[;&|]\s*)jq\s+[^;&|#\n]*{json_path}\b", cmd_no_comments)
+        or re.search(rf"\bpython(?:3(?:\.\d+)?)?\s+-m\s+json\.tool\s+[^;&|#\n]*{json_path}\b", cmd_no_comments)
+        or re.search(rf"\bnode\s+-e\s+[^;&|#\n]*json\.parse[^;&|#\n]*{json_path}\b", cmd_no_comments)
     )
-    output_signal = "out.json" in text and ("{" in evidence or "[" in evidence or "valid_json=true" in text)
-    return ran_extractor and validated_output and output_signal
+    evidence_low = evidence.lower()
+    output_signal = extractor_match.group("json").lower() in evidence_low and ("{" in evidence or "[" in evidence or "valid_json=true" in evidence_low)
+    return validated_output and output_signal
 
 
 def _browser_output_looks_dummy(ro: Any) -> bool:

@@ -114,14 +114,14 @@ class HarnessStateMachineTests(unittest.IsolatedAsyncioTestCase):
 
     def test_c007_browser_security_does_not_force_artifact_during_exploration(self):
         h = self._harness()
-        state = AgentState(task_class="browser_security", task_traits=["browser_security", "html_sanitizer"], action_calls=5, last_required_output_check_step=4)
+        state = AgentState(task_class="browser_security", task_traits=["browser_security", "html_sanitizer"], action_calls=4, last_required_output_check_step=4)
         state.required_outputs.append(RequiredOutput(path="/app/out.html", source="test", exists=False, checked_step=4))
         self.assertIsNone(h._artifact_contract_message(state))
         self.assertFalse(h._violates_artifact_contract(state, parse_action('{"action":"read_file","path":"/app/filter.py"}')))
 
     def test_c007_browser_security_forces_artifact_after_repeated_exploration(self):
         h = self._harness()
-        state = AgentState(task_class="browser_security", task_traits=["browser_security", "html_sanitizer"], action_calls=8, last_required_output_check_step=7)
+        state = AgentState(task_class="browser_security", task_traits=["browser_security", "html_sanitizer"], action_calls=5, last_required_output_check_step=4)
         state.required_outputs.append(RequiredOutput(path="/app/out.html", source="test", exists=False, checked_step=7))
         self.assertIn("Artifact contract repair", h._artifact_contract_message(state))
         self.assertTrue(h._violates_artifact_contract(state, parse_action('{"action":"read_file","path":"/app/test_outputs.py"}')))
@@ -377,6 +377,15 @@ class HarnessStateMachineTests(unittest.IsolatedAsyncioTestCase):
         gate = await h._pre_finish_gate(_FakeEnv(), state, "test")
         self.assertTrue(gate.ok)
 
+    async def test_c007_binary_finish_accepts_tmp_json_validation_for_extractor_programs(self):
+        h = self._harness()
+        state = AgentState(task_class="binary_reverse", task_traits=["binary_reverse"], last_mutation_step=2, last_verification_step=3)
+        state.required_outputs.append(RequiredOutput(path="/app/extract.js", source="test", exists=True))
+        evidence = 'exit_code=0\nstdout:\n/tmp/out.json {"secret":"ok"}'
+        state.public_checks.append(PublicCheck(step=3, command="node /app/extract.js /app/a.out > /tmp/out.json && jq . /tmp/out.json", exit_code=0, passed=True, evidence=evidence, after_last_mutation=True))
+        gate = await h._pre_finish_gate(_FakeEnv(), state, "test")
+        self.assertTrue(gate.ok)
+
 
     async def test_c007_binary_finish_rejects_keyword_only_fake_check(self):
         h = self._harness()
@@ -394,6 +403,38 @@ class HarnessStateMachineTests(unittest.IsolatedAsyncioTestCase):
         state.required_outputs.append(RequiredOutput(path="/app/out.json", source="test", exists=True))
         evidence = 'exit_code=0\nstdout:\nvalid_json=true /app/out.json {"x":1}'
         state.public_checks.append(PublicCheck(step=3, command="cat /app/out.json # extract.js jq", exit_code=0, passed=True, evidence=evidence, after_last_mutation=True))
+        gate = await h._pre_finish_gate(_FakeEnv(), state, "test")
+        self.assertFalse(gate.ok)
+        self.assertIn("binary_reverse", gate.reason)
+
+
+    async def test_c007_binary_finish_rejects_prefixed_echo_fake_check(self):
+        h = self._harness()
+        state = AgentState(task_class="binary_reverse", task_traits=["binary_reverse"], last_mutation_step=2, last_verification_step=3)
+        state.required_outputs.append(RequiredOutput(path="/app/extract.js", source="test", exists=True))
+        evidence = 'exit_code=0\nstdout:\n/tmp/out.json {"secret":"ok"}'
+        state.public_checks.append(PublicCheck(step=3, command="true; echo node /app/extract.js /app/a.out > /tmp/out.json; jq . /tmp/out.json", exit_code=0, passed=True, evidence=evidence, after_last_mutation=True))
+        gate = await h._pre_finish_gate(_FakeEnv(), state, "test")
+        self.assertFalse(gate.ok)
+        self.assertIn("binary_reverse", gate.reason)
+
+    async def test_c007_binary_finish_rejects_validation_of_unrelated_json(self):
+        h = self._harness()
+        state = AgentState(task_class="binary_reverse", task_traits=["binary_reverse"], last_mutation_step=2, last_verification_step=3)
+        state.required_outputs.append(RequiredOutput(path="/app/extract.js", source="test", exists=True))
+        evidence = 'exit_code=0\nstdout:\n/tmp/old.json {"secret":"ok"}'
+        state.public_checks.append(PublicCheck(step=3, command="node /app/extract.js /app/a.out > /tmp/out.json; jq . /tmp/old.json", exit_code=0, passed=True, evidence=evidence, after_last_mutation=True))
+        gate = await h._pre_finish_gate(_FakeEnv(), state, "test")
+        self.assertFalse(gate.ok)
+        self.assertIn("binary_reverse", gate.reason)
+
+
+    async def test_c007_binary_finish_rejects_node_e_validation_of_unrelated_json(self):
+        h = self._harness()
+        state = AgentState(task_class="binary_reverse", task_traits=["binary_reverse"], last_mutation_step=2, last_verification_step=3)
+        state.required_outputs.append(RequiredOutput(path="/app/extract.js", source="test", exists=True))
+        evidence = 'exit_code=0\nstdout:\n/tmp/old.json {"secret":"ok"}'
+        state.public_checks.append(PublicCheck(step=3, command="node /app/extract.js /app/a.out > /tmp/out.json; node -e \"JSON.parse(require('fs').readFileSync('/tmp/old.json','utf8'))\"", exit_code=0, passed=True, evidence=evidence, after_last_mutation=True))
         gate = await h._pre_finish_gate(_FakeEnv(), state, "test")
         self.assertFalse(gate.ok)
         self.assertIn("binary_reverse", gate.reason)
