@@ -1,12 +1,12 @@
 # Current state
 
-Last updated: 2026-05-23.
+Last updated: 2026-05-24.
 
 ## Clean framing
 
 - Target benchmark: **Terminal-Bench v2**.
-- Target task model: **Gemini 3.5 Flash**.
-- Harness direction: **Meta-Harness-inspired candidate/evaluate/improve loop**.
+- Target model: **Gemini 3.5 Flash**.
+- Harness direction: **Meta-Harness-inspired direct agent loop** with compact trace/ledger, deterministic finish gates, repair prompts, and trait-based policies.
 - Flow World role: **inspiration only** for compact trace-as-code / graph-style primitives. This repo does **not** use the Flow World engine.
 
 ## Candidate truth table
@@ -15,18 +15,15 @@ Last updated: 2026-05-23.
 | --- | --- | --- | --- |
 | C000 | Codex-built baseline direct Gemini harness | Ran smoke/panel | Useful baseline |
 | C001 | Codex-built ledger/verify/trace harness | Ran diagnostics; exposed Harbor verifier staging issue | Partially useful |
-| C002 | Codex-built budgeted repair harness | Ran canonical 10-task panel | Last trustworthy benchmark snapshot |
-| C003 | Codex-built adaptive-thinking candidate | n=1 regex-log smoke failed after correct simple_file classification | Not final; do not run n=10 yet |
+| C002 | Codex-built budgeted repair harness | Ran canonical 10-task panel | Historical benchmark snapshot |
+| C003-C006 | Codex-authored adaptive/trait harness line | Ran n=1/n=10 experiments | Superseded by C007 |
+| C007.x | Codex-authored trait/self-audit harness | Current submission-clean line; latest `55e52c7` | Best current harness |
 | G003 | Gemini 3.5 Flash-generated meta-optimizer proposal | Proposal artifact only; not integrated/run | Research artifact |
 
 ## Important boundary
 
-C003 is **not** Gemini-meta-optimized. It is a manual Codex-authored harness candidate informed by C002 traces.
-
-G003 is the Gemini-authored meta-optimizer output. It produced a proposal only. It did not edit the live harness and did not run Terminal-Bench.
+C007.x is **not** Gemini-meta-optimized. It is a manual Codex-authored harness candidate informed by traces and reviewer passes. G003 is the Gemini-authored meta-optimizer output; it produced a proposal only and did not edit the live harness.
 
 ## Current safe next step
 
-Build a tiny follow-up candidate that prevents simple-file tasks from wasting budget on interpreter discovery before writing the required output file, then rerun `terminal-bench/regex-log` n=1.
-
-Do not run a larger panel until the n=1 smoke passes.
+Let C007.11 finish or time out, publish the score with run root evidence, and stop optimizing unless the next change is clearly generic and testable. Avoid benchmark-specific fixes.
