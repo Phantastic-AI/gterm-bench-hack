@@ -117,9 +117,9 @@ def _task_policy(state: AgentState) -> str:
     trait_notes = []
     traits = set(getattr(state, "task_traits", []))
     if "async_cancel" in traits:
-        trait_notes.append("Trait async_cancel: cancellation must let every already-started task run its cleanup/finally path; create/run a focused cancellation test that starts max_concurrent workers, cancels the outer runner, and verifies cleanup for all active workers.")
+        trait_notes.append("Trait async_cancel: cancellation must let every already-started task run its cleanup/finally path; create/run a focused pytest or unittest cancellation test file that starts max_concurrent workers, cancels the outer runner, asserts cleanup for all active workers, and prints structured evidence like started_count=N cleanup_count=N cancelled_count=N plus cleanup_assertion_passed only when all active workers cleaned up.")
     if "html_sanitizer" in traits:
-        trait_notes.append("Trait html_sanitizer: check non-script JavaScript vectors too: event handlers, javascript: URLs, svg/onload/animate, iframes, and benign content preservation.")
+        trait_notes.append("Trait html_sanitizer: explore filter behavior first, then write the bypass artifact. Do not append dummy comments just to satisfy artifact existence. Before finish, run a real pytest/Selenium/browser check from a file, not an inline one-liner, that demonstrates the payload still executes after filtering.")
     if "download_source" in traits:
         trait_notes.append("Trait download_source: if a source package is requested, preserve package metadata/debian directory when possible; do not silently switch to unrelated upstream tarballs.")
     if "git_repair" in traits:
@@ -163,7 +163,7 @@ def _task_policy(state: AgentState) -> str:
         )
     if state.task_class == "browser_security":
         return prefix + (
-            "Class browser_security: generic harmless HTML is not success. Preserve required benign content while checking adversarial "
+            "Class browser_security: generic harmless HTML is not success, and output-looking HTML alone is not success. Preserve required benign content while checking adversarial "
             "payload behavior. Run or create a local check for script/event-handler/javascript: removal or payload execution as the "
             "task requires. Barely executing a file that only defines tests is not enough; use pytest/browser/adversarial assertions."
         )

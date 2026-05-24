@@ -112,15 +112,96 @@ class HarnessStateMachineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(gate)
         self.assertTrue(gate.ok)
 
-    def test_c006_forces_missing_deliverable_after_gate_check_for_browser(self):
+    def test_c007_browser_security_does_not_force_artifact_during_exploration(self):
         h = self._harness()
-        state = AgentState(task_class="browser_security", action_calls=5, last_required_output_check_step=4)
+        state = AgentState(task_class="browser_security", task_traits=["browser_security", "html_sanitizer"], action_calls=5, last_required_output_check_step=4)
         state.required_outputs.append(RequiredOutput(path="/app/out.html", source="test", exists=False, checked_step=4))
-        msg = h._artifact_contract_message(state)
-        self.assertIn("next action must create", msg)
-        self.assertTrue(h._violates_artifact_contract(state, parse_action('{"action":"read_file","path":"/app/filter.py"}')))
-        self.assertFalse(h._violates_artifact_contract(state, parse_action('{"action":"write_file","path":"/app/out.html","content":"<p>x</p>"}')))
+        self.assertIsNone(h._artifact_contract_message(state))
+        self.assertFalse(h._violates_artifact_contract(state, parse_action('{"action":"read_file","path":"/app/filter.py"}')))
 
+    async def test_c007_browser_finish_requires_real_browser_execution(self):
+        h = self._harness()
+        state = AgentState(task_class="browser_security", task_traits=["browser_security", "html_sanitizer"], last_mutation_step=2, last_verification_step=3)
+        state.required_outputs.append(RequiredOutput(path="/app/out.html", source="test", exists=False))
+        state.public_checks.append(PublicCheck(step=3, command="pytest /app/test_outputs.py", exit_code=0, passed=True, evidence="exit_code=0\nstdout: alert text mentioned but no browser execution", after_last_mutation=True))
+        gate = await h._pre_finish_gate(_FakeEnv([_Result("/app/out.html 31 bytes\n---\n<script>alert(1)</script>", return_code=0)]), state, "test")
+        self.assertFalse(gate.ok)
+        self.assertIn("html_sanitizer", gate.reason)
+
+    async def test_c007_async_finish_requires_cleanup_evidence(self):
+        h = self._harness()
+        state = AgentState(task_class="code_debug", task_traits=["code_debug", "async_cancel"], last_mutation_step=2, last_verification_step=3)
+        state.public_checks.append(PublicCheck(step=3, command="python3 -u -c \"print('hello')\"", exit_code=0, passed=True, evidence="exit_code=0\nstdout:\nhello", after_last_mutation=True))
+        gate = await h._pre_finish_gate(_FakeEnv(), state, "test")
+        self.assertFalse(gate.ok)
+        self.assertIn("async_cancel", gate.reason)
+
+    async def test_c007_async_finish_rejects_keyword_only_fake_check(self):
+        h = self._harness()
+        state = AgentState(task_class="code_debug", task_traits=["code_debug", "async_cancel"], last_mutation_step=2, last_verification_step=3)
+        state.public_checks.append(PublicCheck(step=3, command="echo cancel cleanup_count passed", exit_code=0, passed=True, evidence="exit_code=0\ncancel cleanup_count passed", after_last_mutation=True))
+        gate = await h._pre_finish_gate(_FakeEnv(), state, "test")
+        self.assertFalse(gate.ok)
+        self.assertIn("async_cancel", gate.reason)
+
+
+    async def test_c007_async_finish_rejects_inline_python_fake_check(self):
+        h = self._harness()
+        state = AgentState(task_class="code_debug", task_traits=["code_debug", "async_cancel"], last_mutation_step=2, last_verification_step=3)
+        evidence = "exit_code=0\nstdout:\ncancel started_count=1 cleanup_count=1 cancelled_count=1 cleanup_assertion_passed"
+        state.public_checks.append(PublicCheck(step=3, command="python3 -c \"print('cancel started_count=1 cleanup_count=1 cancelled_count=1 cleanup_assertion_passed')\"", exit_code=0, passed=True, evidence=evidence, after_last_mutation=True))
+        gate = await h._pre_finish_gate(_FakeEnv(), state, "test")
+        self.assertFalse(gate.ok)
+        self.assertIn("async_cancel", gate.reason)
+
+
+    async def test_c007_async_finish_rejects_python_heredoc_fake_check(self):
+        h = self._harness()
+        state = AgentState(task_class="code_debug", task_traits=["code_debug", "async_cancel"], last_mutation_step=2, last_verification_step=3)
+        evidence = "exit_code=0\nstdout:\ncancel started_count=1 cleanup_count=1 cancelled_count=1 cleanup_assertion_passed"
+        command = "python3 <<'PY' # pytest\nprint('cancel started_count=1 cleanup_count=1 cancelled_count=1 cleanup_assertion_passed')\nPY"
+        state.public_checks.append(PublicCheck(step=3, command=command, exit_code=0, passed=True, evidence=evidence, after_last_mutation=True))
+        gate = await h._pre_finish_gate(_FakeEnv(), state, "test")
+        self.assertFalse(gate.ok)
+        self.assertIn("async_cancel", gate.reason)
+
+    async def test_c007_async_finish_accepts_structured_cleanup_count(self):
+        h = self._harness()
+        state = AgentState(task_class="code_debug", task_traits=["code_debug", "async_cancel"], last_mutation_step=2, last_verification_step=3)
+        evidence = "exit_code=0\nstdout:\nstarted_count=2 cleanup_count=2 cancelled_count=2 cleanup_assertion_passed"
+        state.public_checks.append(PublicCheck(step=3, command="python3 -m unittest /app/test_cancel.py", exit_code=0, passed=True, evidence=evidence, after_last_mutation=True))
+        gate = await h._pre_finish_gate(_FakeEnv(), state, "test")
+        self.assertTrue(gate.ok)
+
+    async def test_c007_browser_finish_rejects_keyword_only_fake_check(self):
+        h = self._harness()
+        state = AgentState(task_class="browser_security", task_traits=["browser_security", "html_sanitizer"], last_mutation_step=2, last_verification_step=3)
+        state.required_outputs.append(RequiredOutput(path="/app/out.html", source="test", exists=False))
+        state.public_checks.append(PublicCheck(step=3, command="echo pytest chromium passed", exit_code=0, passed=True, evidence="exit_code=0\npytest chromium passed", after_last_mutation=True))
+        gate = await h._pre_finish_gate(_FakeEnv([_Result("/app/out.html 31 bytes\n---\n<script>alert(1)</script>", return_code=0)]), state, "test")
+        self.assertFalse(gate.ok)
+        self.assertIn("html_sanitizer", gate.reason)
+
+    async def test_c007_browser_finish_rejects_inline_python_fake_check(self):
+        h = self._harness()
+        state = AgentState(task_class="browser_security", task_traits=["browser_security", "html_sanitizer"], last_mutation_step=2, last_verification_step=3)
+        state.required_outputs.append(RequiredOutput(path="/app/out.html", source="test", exists=False))
+        evidence = "exit_code=0\nstdout:\ntest session starts collected 1 item 1 passed alert_detected=true selenium"
+        state.public_checks.append(PublicCheck(step=3, command="python3 -c \"print('test session starts collected 1 item 1 passed alert_detected=true selenium')\" # pytest", exit_code=0, passed=True, evidence=evidence, after_last_mutation=True))
+        gate = await h._pre_finish_gate(_FakeEnv([_Result("/app/out.html 31 bytes\n---\n<script>alert(1)</script>", return_code=0)]), state, "test")
+        self.assertFalse(gate.ok)
+        self.assertIn("html_sanitizer", gate.reason)
+
+    async def test_c007_browser_finish_rejects_python_heredoc_fake_check(self):
+        h = self._harness()
+        state = AgentState(task_class="browser_security", task_traits=["browser_security", "html_sanitizer"], last_mutation_step=2, last_verification_step=3)
+        state.required_outputs.append(RequiredOutput(path="/app/out.html", source="test", exists=False))
+        evidence = "exit_code=0\nstdout:\ntest session starts collected 1 item 1 passed alert_detected=true selenium"
+        command = "python3 <<'PY' # pytest\nprint('test session starts collected 1 item 1 passed alert_detected=true selenium')\nPY"
+        state.public_checks.append(PublicCheck(step=3, command=command, exit_code=0, passed=True, evidence=evidence, after_last_mutation=True))
+        gate = await h._pre_finish_gate(_FakeEnv([_Result("/app/out.html 31 bytes\n---\n<script>alert(1)</script>", return_code=0)]), state, "test")
+        self.assertFalse(gate.ok)
+        self.assertIn("html_sanitizer", gate.reason)
 
 
     def test_c006_simple_file_forces_write_after_failed_runtime_probe(self):

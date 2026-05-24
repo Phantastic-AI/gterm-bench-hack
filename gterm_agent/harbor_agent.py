@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import shlex
 import time
 from typing import Any
@@ -341,7 +342,7 @@ class GeminiDirectAgent(BaseAgent):
         missing = [ro.path for ro in state.required_outputs if not ro.exists and ro.path not in state.touched_files]
         if not missing:
             return None
-        force_classes = {"simple_file", "answer_requires_computation", "browser_security", "data_query", "binary_reverse"}
+        force_classes = {"simple_file", "answer_requires_computation", "data_query", "binary_reverse"}
         if state.task_class == "simple_file" and state.last_mutation_step == 0 and (state.action_calls >= 1 or _latest_failed_optional_runtime_probe(state)):
             state.artifact_contract_repairs += 1
             paths = ", ".join(missing)
@@ -352,6 +353,8 @@ class GeminiDirectAgent(BaseAgent):
                 "derive the artifact from the prompt/visible files and write it now."
             )
         if state.last_required_output_check_step and missing:
+            if _has_trait(state, "html_sanitizer"):
+                return None
             state.artifact_contract_repairs += 1
             paths = ", ".join(missing)
             if state.task_class in force_classes:
@@ -369,7 +372,7 @@ class GeminiDirectAgent(BaseAgent):
     def _violates_artifact_contract(self, state: AgentState, action: AgentAction) -> bool:
         if not state.required_outputs:
             return False
-        force_classes = {"simple_file", "answer_requires_computation", "browser_security", "data_query", "binary_reverse"}
+        force_classes = {"simple_file", "answer_requires_computation", "data_query", "binary_reverse"}
         if state.task_class not in force_classes:
             return False
         required = {ro.path for ro in state.required_outputs}
@@ -680,7 +683,7 @@ PASS only if the touched artifacts plausibly solve the task and the latest relev
         if _has_trait(state, "git_repair"):
             checks.append(any(k in cmd for k in ("git status", "git diff", "git log", "git reflog", "git branch", "pytest", "cmp ", "md5sum", "sha1sum")))
         if _has_trait(state, "html_sanitizer"):
-            checks.append(any(k in cmd for k in ("pytest", "selenium", "chrome", "chromium", "alert", "playwright", "onerror", "javascript:", "svg", "iframe")))
+            checks.append(any(k in cmd for k in ("pytest", "selenium", "webdriver", "chromedriver", "chrome", "chromium", "playwright")))
         if _has_trait(state, "binary_reverse"):
             checks.append(any(k in cmd for k in ("readelf", "objdump", "file ", "strings", "node ", "python", "jq", "./", "extract.js", "out.json")))
         if _has_trait(state, "async_cancel"):
@@ -740,6 +743,8 @@ PASS only if the touched artifacts plausibly solve the task and the latest relev
                 return GateResult(False, f"{state.task_class} requires a fresh passing public/self-check", stale_verification=stale_verification, no_public_check=no_public_check, evidence=evidence)
             if not self._public_check_is_meaningful(state, latest_check.command):
                 return GateResult(False, f"{state.task_class} public/self-check is not behavioral enough", stale_verification=stale_verification, no_public_check=no_public_check, evidence=evidence)
+            if _has_trait(state, "html_sanitizer") and not _browser_check_has_real_execution(latest_check.command, latest_check.evidence):
+                return GateResult(False, "html_sanitizer requires real pytest/Selenium/browser execution evidence", stale_verification=stale_verification, no_public_check=no_public_check, evidence=evidence)
             if _has_trait(state, "build_install") and not _build_check_has_install_smoke(latest_check.command, latest_check.evidence):
                 return GateResult(False, "build_compile_install requires installed binary plus direct smoke/ldd/which evidence", stale_verification=stale_verification, no_public_check=no_public_check, evidence=evidence)
             if _has_trait(state, "git_repair"):
@@ -819,9 +824,41 @@ def _build_check_has_install_smoke(command: str, evidence: str) -> bool:
     smoke_signal = any(k in text for k in ("ldd", "pmars -", "results:", "tail -n", "no x11", "not found"))
     return install_signal and smoke_signal
 
+def _command_is_inline_python(command: str) -> bool:
+    cmd = command.lower()
+    return bool(
+        re.search(r"\bpython(?:3(?:\.\d+)?)?\b[^;|&\n]*\s-c\b", cmd)
+        or re.search(r"\bpython(?:3(?:\.\d+)?)?\b[^;|&\n]*(?:\s-)?\s*<<", cmd)
+    )
+
+
 def _async_check_has_cancel_cleanup(command: str, evidence: str) -> bool:
+    cmd = command.lower()
     text = f"{command}\n{evidence}".lower()
-    return ("cancel" in text or "keyboardinterrupt" in text or "cancellederror" in text) and ("cleaned up" in text or "cleanup" in text or "finally" in text) and ("pass" in text or "ok" in text or "exit_code=0" in text)
+    if "echo " in cmd or _command_is_inline_python(command):
+        return False
+    if "pytest" not in cmd and "unittest" not in cmd:
+        return False
+    if not ("cancel" in text or "keyboardinterrupt" in text or "cancellederror" in text):
+        return False
+    if "exit_code=0" not in text and "passed" not in text and " ok" not in text:
+        return False
+    counts = {name: int(value) for name, value in re.findall(r"(started_count|cleanup_count|cancelled_count)\s*=\s*(\d+)", text)}
+    counts_match = counts.get("started_count", 0) >= 1 and counts.get("cleanup_count", -1) >= counts.get("started_count", 0)
+    assertion_signal = "cleanup_assertion_passed" in text or "all_started_cleaned=true" in text
+    return counts_match and assertion_signal
+
+
+def _browser_check_has_real_execution(command: str, evidence: str) -> bool:
+    cmd = command.lower()
+    text = f"{command}\n{evidence}".lower()
+    if cmd.strip().startswith("echo") or "echo pytest" in cmd or _command_is_inline_python(command):
+        return False
+    pytest_run = "pytest" in cmd and "test session starts" in text and "collected" in text and " passed" in text
+    browser_signal = any(k in text for k in ("selenium", "webdriver", "chromedriver", "chrome", "chromium", "playwright"))
+    explicit_browser_run = any(k in cmd for k in ("selenium", "webdriver", "chromedriver", "chrome", "chromium", "playwright"))
+    explicit_alert_success = "alert successfully triggered" in text or "alert_detected=true" in text
+    return (pytest_run and (browser_signal or explicit_alert_success)) or (explicit_browser_run and explicit_alert_success)
 
 
 def _binary_check_is_output_or_extraction(command: str, evidence: str) -> bool:
