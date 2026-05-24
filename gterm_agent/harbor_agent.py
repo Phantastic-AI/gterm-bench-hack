@@ -504,20 +504,20 @@ class GeminiDirectAgent(BaseAgent):
         if state.task_class == "simple_file":
             return GateResult(True, "simple_file hard gates passed; semantic critic skipped")
         state.semantic_critic_calls += 1
-        prompt = f"""You are the semantic finish critic for a Terminal-Bench agent. Judge only visible evidence; do not assume hidden verifier access.
+        prompt = f"""You are the semantic finish critic for a Terminal-Bench agent. Judge only visible evidence; do not assume hidden verifier access. Be terse.
 
 TASK:
-{instruction}
+{compact_text(instruction, 4000)}
 
-STATE_JSON:
-{json.dumps(state.to_prompt_dict(), ensure_ascii=False, indent=2)[:50000]}
+CRITIC_DIGEST_JSON:
+{json.dumps(_critic_state_digest(state), ensure_ascii=False, indent=2)}
 
-Return exactly JSON:
-{{"verdict":"pass"|"repair","reason":"concise reason","required_next_action":"what actor should do next","check_to_run":"specific visible check to run before finish"}}
+Return minified JSON only, max 60 words:
+{{"verdict":"pass|repair","reason":"...","required_next_action":"...","check_to_run":"..."}}
 
 PASS only if the touched artifacts plausibly solve the task and the latest relevant check is meaningful and fresh. REPAIR if evidence is stale, superficial, semantically unrelated, or contradicted by failures."""
         try:
-            resp = client.generate([_user_part(prompt)], temperature=0.0, max_output_tokens=2048, system_prompt="You are a strict semantic critic. Return JSON only.", thinking_level="high")
+            resp = client.generate([_user_part(prompt)], temperature=0.0, max_output_tokens=512, system_prompt="Return one minified JSON object. No prose.", thinking_level="medium")
             state.model_calls += 1
             if self.trace:
                 self.trace.model_step(state.step * 1000 + state.semantic_critic_calls, prompt, resp.text, resp.usage, resp.latency_ms)
@@ -747,6 +747,22 @@ def posix_dirname(path: str) -> str:
     return path.rsplit("/", 1)[0] or "/"
 
 
+def _critic_state_digest(state: AgentState) -> dict[str, Any]:
+    return {
+        "task_class": state.task_class,
+        "required_outputs": [ro.__dict__ for ro in state.required_outputs],
+        "touched_files": state.touched_files,
+        "plan_doc": state.plan_doc,
+        "latest_action": state.last_action,
+        "latest_checks": [pc.__dict__ for pc in state.public_checks[-4:]],
+        "last_mutation_step": state.last_mutation_step,
+        "last_verification_step": state.last_verification_step,
+        "last_failed_check_step": state.last_failed_check_step,
+        "last_failed_check_digest": compact_text(state.last_failed_check_digest, 1500),
+        "recent_events": state.recent_events[-5:],
+    }
+
+
 def _json_obj_from_text(text: str) -> dict[str, Any]:
     raw = (text or "").strip()
     try:
@@ -756,6 +772,14 @@ def _json_obj_from_text(text: str) -> dict[str, Any]:
         start = raw.find("{")
         end = raw.rfind("}")
         if start >= 0 and end > start:
-            obj = json.loads(raw[start : end + 1])
-            return obj if isinstance(obj, dict) else {}
+            try:
+                obj = json.loads(raw[start : end + 1])
+                return obj if isinstance(obj, dict) else {}
+            except Exception:
+                pass
+        low = raw.lower()
+        if '"verdict"' in low and '"pass"' in low:
+            return {"verdict": "pass", "reason": compact_text(raw, 300), "required_next_action": "", "check_to_run": ""}
+        if '"verdict"' in low and '"repair"' in low:
+            return {"verdict": "repair", "reason": compact_text(raw, 300), "required_next_action": "", "check_to_run": ""}
         raise
