@@ -277,6 +277,7 @@ class GeminiDirectAgent(BaseAgent):
                     state.phase = "FINISH"
                     break
                 state.add_ledger(f"Auto-finish gate not ready: {auto_gate.reason}")
+                forced_message = forced_message or _auto_gate_repair_message(auto_gate)
             forced_message = forced_message or self._artifact_contract_message(state)
         else:
             stop_reason = f"max_steps {budget.max_steps} reached"
@@ -830,6 +831,15 @@ echo GIT_REPAIR_CLEAN'''
         if rc != 0:
             return GateResult(False, "git_repair repo is not clean or recovered patch files do not match", stale_verification=stale_verification, no_public_check=no_public_check, evidence=evidence + [compact_text(obs, 1200)])
         return GateResult(True, "git repair gate passed", stale_verification=stale_verification, no_public_check=no_public_check, evidence=evidence)
+
+
+def _auto_gate_repair_message(gate: GateResult) -> str | None:
+    if gate.ok or gate.missing_outputs:
+        return None
+    reason = gate.reason.lower()
+    if any(k in reason for k in ("requires", "not behavioral", "stale", "validation evidence", "execution evidence")):
+        return gate.repair_prompt()
+    return None
 
 
 def _has_trait(state: AgentState, trait: str) -> bool:

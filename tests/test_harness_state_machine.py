@@ -43,9 +43,9 @@ def _install_harbor_stubs() -> None:
 
 _install_harbor_stubs()
 
-from gterm_agent.harbor_agent import GeminiDirectAgent, _json_obj_from_text  # noqa: E402
+from gterm_agent.harbor_agent import GeminiDirectAgent, _auto_gate_repair_message, _json_obj_from_text  # noqa: E402
 from gterm_agent.shell_protocol import parse_action  # noqa: E402
-from gterm_agent.state import AgentState, PublicCheck, RequiredOutput, classify_task_budget, extract_required_outputs, infer_model_profile, infer_task_traits  # noqa: E402
+from gterm_agent.state import AgentState, GateResult, PublicCheck, RequiredOutput, classify_task_budget, extract_required_outputs, infer_model_profile, infer_task_traits  # noqa: E402
 
 
 @dataclass
@@ -308,6 +308,14 @@ class HarnessStateMachineTests(unittest.IsolatedAsyncioTestCase):
         h = self._harness()
         state = AgentState(task_class="simple_file")
         self.assertEqual(h._choose_thinking_level(state), "low")
+
+    def test_c007_auto_gate_repair_prompt_for_behavioral_evidence_failures(self):
+        msg = _auto_gate_repair_message(GateResult(False, "async_cancel requires cancellation cleanup evidence for all started tasks"))
+
+        self.assertIsNotNone(msg)
+        self.assertIn("Required next behavior", msg)
+        self.assertIn("async_cancel", msg)
+        self.assertIsNone(_auto_gate_repair_message(GateResult(False, "required output path(s) missing", missing_outputs=["/app/out.txt"])))
 
     async def test_c007_shell_timeout_has_practical_floor_but_respects_budget(self):
         h = self._harness()
