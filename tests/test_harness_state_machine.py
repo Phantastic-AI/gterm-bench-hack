@@ -59,9 +59,11 @@ class _FakeEnv:
     def __init__(self, results: list[_Result] | None = None):
         self.results = list(results or [])
         self.commands: list[str] = []
+        self.timeouts: list[int] = []
 
     async def exec(self, command: str, cwd: str = "/app", timeout_sec: int = 120):
         self.commands.append(command)
+        self.timeouts.append(timeout_sec)
         if self.results:
             return self.results.pop(0)
         return _Result(stdout="ok", return_code=0)
@@ -306,6 +308,16 @@ class HarnessStateMachineTests(unittest.IsolatedAsyncioTestCase):
         h = self._harness()
         state = AgentState(task_class="simple_file")
         self.assertEqual(h._choose_thinking_level(state), "low")
+
+    async def test_c007_shell_timeout_has_practical_floor_but_respects_budget(self):
+        h = self._harness()
+        env = _FakeEnv()
+        state = AgentState(task_class="code_debug")
+
+        await h._dispatch_action(env, 1, parse_action('{"action":"shell","command":"python3 --version","timeout_sec":10}'), state, 120)
+        await h._dispatch_action(env, 2, parse_action('{"action":"shell","command":"true","timeout_sec":10}'), state, 20)
+
+        self.assertEqual(env.timeouts, [30, 20])
 
     def test_c007_traits_are_composable_and_model_profile_is_swappable(self):
         instruction = "Download the Debian source package, build it from source, install the binary to /usr/local/bin/tool, and commit the git fix."

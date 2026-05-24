@@ -479,7 +479,13 @@ class GeminiDirectAgent(BaseAgent):
             return obs
         if action.action == "shell":
             purpose = action.purpose or action.ledger or "shell action"
-            timeout = min(action.timeout_sec or budget_timeout_sec, budget_timeout_sec)
+            requested_timeout = int(action.timeout_sec or budget_timeout_sec)
+            # Harbor/container startup overhead can make Gemini's very small
+            # per-action timeout choices look like tool failures. Keep explicit
+            # timeouts bounded by the task budget, but clamp tiny shell timeouts
+            # to a practical floor so probes/checks fail on command behavior, not
+            # scheduler latency.
+            timeout = min(max(requested_timeout, min(30, budget_timeout_sec)), budget_timeout_sec)
             obs = await self._exec(environment, action.command or "true", action.cwd, timeout, purpose, step=step, state=state)
             if _looks_mutating(action.command or ""):
                 state.last_mutation_step = step
