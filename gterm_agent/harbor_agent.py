@@ -348,9 +348,10 @@ class GeminiDirectAgent(BaseAgent):
             paths = ", ".join(missing)
             return (
                 "Artifact contract repair: simple artifact tasks fail if the required file is missing. "
-                f"Required path(s): {paths}. Your next action must be write_file/write_file_b64 "
-                "or a POSIX shell redirect/tee that writes one exact required path. Stop probing Python/Node/Perl/package managers; "
-                "derive the artifact from the prompt/visible files and write it now."
+                f"Required path(s): {paths}. Your next action should be write_file/write_file_b64 "
+                "or a POSIX shell redirect/tee that writes one exact required path. If Python is unavailable, one pure local "
+                "capability probe such as which/command -v for already-installed tools is allowed; otherwise stop probing package managers "
+                "and derive the artifact from the prompt/visible files now."
             )
         if state.last_required_output_check_step and missing:
             if _has_trait(state, "html_sanitizer"):
@@ -385,6 +386,8 @@ class GeminiDirectAgent(BaseAgent):
         if action.action == "write_file" and action.path in required:
             return False
         if action.action == "shell" and _shell_writes_required(action.command or "", required):
+            return False
+        if action.action == "shell" and state.task_class == "simple_file" and state.last_mutation_step == 0 and _is_local_capability_probe(action.command or ""):
             return False
         return action.action not in {"finish", "abort"}
 
@@ -832,12 +835,17 @@ def _command_is_inline_python(command: str) -> bool:
     )
 
 
+def _runs_file_backed_python_test(command: str) -> bool:
+    cmd = command.lower()
+    return bool(re.search(r"\bpython(?:3(?:\.\d+)?)?\b[^;|&<>\n]*(?:test_[\w./-]+|[\w./-]+_test|tests?)[\w./-]*\.py\b", cmd))
+
+
 def _async_check_has_cancel_cleanup(command: str, evidence: str) -> bool:
     cmd = command.lower()
     text = f"{command}\n{evidence}".lower()
     if "echo " in cmd or _command_is_inline_python(command):
         return False
-    if "pytest" not in cmd and "unittest" not in cmd:
+    if "pytest" not in cmd and "unittest" not in cmd and not _runs_file_backed_python_test(command):
         return False
     if not ("cancel" in text or "keyboardinterrupt" in text or "cancellederror" in text):
         return False
@@ -898,6 +906,13 @@ def _is_milestone_progress(task_class: str, command: str, obs: str) -> bool:
     if task_class == "binary_reverse":
         return any(k in cmd for k in ("file ", "readelf", "objdump", "strings", "jq", "node ", "python"))
     return False
+
+
+def _is_local_capability_probe(command: str) -> bool:
+    cmd = command.strip().lower()
+    if any(k in cmd for k in ("apt", "pip", "npm", "curl", "wget", "git ", ">", "|", ";", "&&", "||")):
+        return False
+    return bool(re.match(r"^(which|command -v|type -p) [a-z0-9_+./ -]+$", cmd))
 
 
 def _shell_writes_required(command: str, required_paths: set[str]) -> bool:

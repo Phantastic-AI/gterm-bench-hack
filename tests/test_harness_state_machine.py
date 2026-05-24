@@ -155,6 +155,14 @@ class HarnessStateMachineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("async_cancel", gate.reason)
 
 
+    async def test_c007_async_finish_accepts_file_backed_python_unittest(self):
+        h = self._harness()
+        state = AgentState(task_class="code_debug", task_traits=["code_debug", "async_cancel"], last_mutation_step=2, last_verification_step=3)
+        evidence = "exit_code=0\nstdout:\nRan 1 test in 0.01s\nOK\nstarted_count=2 cleanup_count=2 cancelled_count=2 cleanup_assertion_passed"
+        state.public_checks.append(PublicCheck(step=3, command="python3 /app/test_run.py", exit_code=0, passed=True, evidence=evidence, after_last_mutation=True))
+        gate = await h._pre_finish_gate(_FakeEnv(), state, "test")
+        self.assertTrue(gate.ok)
+
     async def test_c007_async_finish_rejects_python_heredoc_fake_check(self):
         h = self._harness()
         state = AgentState(task_class="code_debug", task_traits=["code_debug", "async_cancel"], last_mutation_step=2, last_verification_step=3)
@@ -209,9 +217,20 @@ class HarnessStateMachineTests(unittest.IsolatedAsyncioTestCase):
         state = AgentState(task_class="simple_file", action_calls=1, last_mutation_step=0)
         state.required_outputs.append(RequiredOutput(path="/app/regex.txt", source="test"))
         state.public_checks.append(PublicCheck(step=1, command="python3 --version", exit_code=127, passed=False, evidence="not found", after_last_mutation=True))
-        self.assertIn("Stop probing", h._artifact_contract_message(state))
+        self.assertIn("required file is missing", h._artifact_contract_message(state))
         self.assertTrue(h._violates_artifact_contract(state, parse_action('{"action":"shell","command":"python3 --version"}')))
         self.assertFalse(h._violates_artifact_contract(state, parse_action('{"action":"write_file","path":"/app/regex.txt","content":"x"}')))
+
+
+    def test_c007_simple_file_allows_local_capability_probe_after_python_missing(self):
+        h = self._harness()
+        state = AgentState(task_class="simple_file", action_calls=1, last_mutation_step=0)
+        state.required_outputs.append(RequiredOutput(path="/app/regex.txt", source="test"))
+        state.public_checks.append(PublicCheck(step=1, command="python3 --version", exit_code=127, passed=False, evidence="not found", after_last_mutation=True))
+        action = parse_action('{"action":"shell","command":"which perl node grep sed awk"}')
+        self.assertFalse(h._violates_artifact_contract(state, action))
+        network_action = parse_action('{"action":"shell","command":"which perl || apt-get update"}')
+        self.assertTrue(h._violates_artifact_contract(state, network_action))
 
     async def test_c006_build_gate_rejects_makefile_grep_as_finish_check(self):
         h = self._harness()
