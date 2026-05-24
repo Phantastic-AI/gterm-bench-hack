@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 import json
 import re
 import shlex
@@ -54,6 +55,7 @@ class GeminiDirectAgent(BaseAgent):
         model = self.model_name or "google/gemini-3.5-flash"
         self.gemini_model = model.split("/", 1)[1] if model.startswith("google/") else model
         self.trace: TraceWriter | None = None
+        self.exec_timeout_grace_sec = 15.0
         self.system_prompt = load_system_prompt() + "\n\nC007.1 runtime addendum: use a tight single-action coding-agent loop. Return exactly one observable action per turn. Do not use broad transaction actions; the runtime will reject them. Keep plan/debug/decision state in concise ledger text and host-side traces. Finish only through deterministic class gates: required paths, fresh meaningful checks, and no unrepaired failures. Semantic critic approval is not a completion signal."
 
     @staticmethod
@@ -630,7 +632,19 @@ PASS only if the touched artifacts plausibly solve the task and the latest relev
     async def _exec(self, environment: BaseEnvironment, command: str, cwd: str, timeout: int, purpose: str, step: int = 0, state: AgentState | None = None) -> str:
         started = time.monotonic()
         try:
-            result = await environment.exec(command, cwd=cwd, timeout_sec=timeout)
+            # Harbor/container backends should enforce timeout_sec, but stale
+            # C007 traces showed environment.exec can hang without emitting an
+            # observation. Keep the agent loop self-healing by enforcing a
+            # host-side deadline too; the model then gets concrete timeout
+            # evidence and can replan instead of wedging the whole batch.
+            outer_timeout = max(float(timeout), 0.0) + float(getattr(self, "exec_timeout_grace_sec", 15.0))
+            result = await asyncio.wait_for(environment.exec(command, cwd=cwd, timeout_sec=timeout), timeout=outer_timeout)
+        except asyncio.TimeoutError:
+            class _R:
+                stdout = ""
+                stderr = f"environment.exec host-side timeout after {timeout}s (+grace); command may be stuck"
+                return_code = -1
+            result = _R()
         except Exception as e:  # noqa: BLE001
             class _R:
                 stdout = ""

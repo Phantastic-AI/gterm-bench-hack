@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 import types
 import unittest
@@ -69,11 +70,30 @@ class _FakeEnv:
         return _Result(stdout="ok", return_code=0)
 
 
+class _HangingEnv:
+    async def exec(self, command: str, cwd: str = "/app", timeout_sec: int = 120):
+        await asyncio.sleep(3600)
+        return _Result(stdout="late", return_code=0)
+
+
 class HarnessStateMachineTests(unittest.IsolatedAsyncioTestCase):
     def _harness(self) -> GeminiDirectAgent:
         h = object.__new__(GeminiDirectAgent)
         h.trace = None
+        h.exec_timeout_grace_sec = 15.0
         return h
+
+    async def test_c007_exec_has_host_side_timeout_when_environment_hangs(self):
+        h = self._harness()
+        h.exec_timeout_grace_sec = 0.01
+        state = AgentState(task_class="code_debug")
+
+        obs = await h._exec(_HangingEnv(), "cat /app/file", "/app", 0, "read possibly stuck file", step=1, state=state)
+
+        self.assertIn("host-side timeout", obs)
+        self.assertIn("exit_code=-1", obs)
+        self.assertEqual(state.shell_calls, 1)
+        self.assertEqual(state.recent_events[-1]["exit_code"], -1)
 
     def test_c006_classifies_build_and_computation_without_task_names(self):
         build = classify_task_budget(
