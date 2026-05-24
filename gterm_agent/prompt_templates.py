@@ -117,7 +117,7 @@ def _task_policy(state: AgentState) -> str:
     trait_notes = []
     traits = set(getattr(state, "task_traits", []))
     if "async_cancel" in traits:
-        trait_notes.append("Trait async_cancel: cancellation must let every already-started task run its cleanup/finally path; tests should cancel the outer runner and count cleanup for all active workers.")
+        trait_notes.append("Trait async_cancel: cancellation must let every already-started task run its cleanup/finally path; create/run a focused cancellation test that starts max_concurrent workers, cancels the outer runner, and verifies cleanup for all active workers.")
     if "html_sanitizer" in traits:
         trait_notes.append("Trait html_sanitizer: check non-script JavaScript vectors too: event handlers, javascript: URLs, svg/onload/animate, iframes, and benign content preservation.")
     if "download_source" in traits:
@@ -174,7 +174,7 @@ def _task_policy(state: AgentState) -> str:
         )
     if state.task_class == "binary_reverse":
         return prefix + (
-            "Class binary_reverse: inspect the binary with file/readelf/objdump/strings or available scripts, run extraction against "
+            "Class binary_reverse: do not build/compile unless explicitly required. Inspect the binary with file/readelf/objdump/strings or available scripts, create required extraction scripts/outputs, run extraction against "
             "the binary, validate output format, and avoid treating helper/input filenames as deliverables."
         )
     return prefix + (

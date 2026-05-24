@@ -20,7 +20,7 @@ Phase = Literal[
 ]
 
 CANDIDATE_ID = "C007_trait_self_audit"
-AGENT_VERSION = "0.7.0-c007-trait-self-audit"
+AGENT_VERSION = "0.7.1-c007-trait-dynamic"
 MAX_PROMPT_TOKENS_BEFORE_COMPACT = 80_000
 PROMPT_CHAR_BUDGET = MAX_PROMPT_TOKENS_BEFORE_COMPACT * 4
 
@@ -201,7 +201,7 @@ def classify_task_budget(instruction: str, requested_max_steps: int, requested_w
     has_regex_task = any(k in text for k in ("regex", "regular expression"))
     has_data_query = (not has_regex_task) and (any(k in text for k in ("sql", "sqlite", "cte", "window function", "database", "sol.sql", "my-sql-query")) or bool(re.search(r"\bquery\b", text) and re.search(r"\b(optimi[sz]e|sql|database|sqlite)\b", text)))
     has_browser = any(k in text for k in ("selenium", "browser", "chrome", "xss", "html", "javascript", "alert", "iframe", "sanitize", "script tag", "event handler"))
-    has_binary = any(k in text for k in ("elf", "binary", "reverse engineer", "disassemble", "objdump", "readelf"))
+    has_binary = any(k in text for k in ("elf", "extract.js", "out.json", "reverse engineer", "disassemble", "objdump", "readelf")) or ("binary" in text and any(k in text for k in ("extract", "json", "parse", "symbols", "sections", "segments")))
     has_build = any(k in text for k in ("makefile", "cmake", "source package", "apt-get source", "from source", "/usr/local/bin", "binary should be installed")) or ("install" in text and any(k in text for k in ("binary", "executable", "source", "build", "compile", "/usr/local/bin"))) or ("build" in text and any(k in text for k in ("binary", "executable", "source", "make", "install"))) or ("compile" in text and any(k in text for k in ("binary", "executable", "source", "make", "install")))
     has_git_repair = any(k in text for k in ("git", "reflog", "lost commit", "merge conflict", "unmerged", "branch", "commit")) and any(k in text for k in ("fix", "recover", "restore", "merge", "lost", "conflict", "commit", "branch"))
     has_code = any(k in text for k in ("fix", "bug", "test", "pytest", "npm", "implement", "function", "script", "async"))
@@ -210,12 +210,12 @@ def classify_task_budget(instruction: str, requested_max_steps: int, requested_w
     has_simple_output = (any(k in text for k in ("write", "create", "save", "output", "put", "store")) or has_regex_task) and has_output_path
     if has_data_query:
         cls, steps, wall, shells, no_prog, timeout, why = "data_query", 34, 540, 56, 5, 120, "SQL/data tasks need schema inspection plus execution"
+    elif has_binary:
+        cls, steps, wall, shells, no_prog, timeout, why = "binary_reverse", 36, 600, 70, 6, 150, "binary/reverse tasks need binary inspection and conservative outputs"
     elif has_build:
         cls, steps, wall, shells, no_prog, timeout, why = "build_compile_install", 40, 660, 74, 7, 180, "build/install tasks need source/dependency/build/install/smoke milestones"
     elif has_browser:
         cls, steps, wall, shells, no_prog, timeout, why = "browser_security", 32, 480, 60, 5, 120, "browser/security tasks require adversarial and benign checks before finish"
-    elif has_binary:
-        cls, steps, wall, shells, no_prog, timeout, why = "binary_reverse", 32, 480, 58, 5, 120, "binary/reverse tasks need binary inspection and conservative outputs"
     elif has_git_repair:
         cls, steps, wall, shells, no_prog, timeout, why = "git_repair", 32, 520, 64, 5, 120, "git repair tasks require a mutation, clean status, and fresh verification"
     elif has_regex_task and has_output_path:

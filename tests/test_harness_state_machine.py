@@ -186,6 +186,19 @@ class HarnessStateMachineTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(h._public_check_is_meaningful(state, "git status --porcelain=v1 && git diff --check"))
         self.assertTrue(h._public_check_is_meaningful(state, "which pmars && ldd /usr/local/bin/pmars && pmars -r 1 sample.red"))
 
+    def test_c007_dynamic_traits_recover_from_prompt_miss(self):
+        h = self._harness()
+        state = AgentState(task_class="unknown")
+        h._update_dynamic_traits(state, parse_action('{"action":"shell","command":"cd repo && git merge abc"}'), "CONFLICT (content): Merge conflict in f")
+        self.assertIn("git_repair", state.task_traits)
+
+    def test_c007_extract_elf_classifies_as_binary_not_build(self):
+        budget = classify_task_budget(
+            "Given an ELF binary /app/a.out, create /app/extract.js that extracts section data and writes /app/out.json.",
+            60, 840, 120, 240,
+        )
+        self.assertEqual(budget.task_class, "binary_reverse")
+
     async def test_c006_git_repair_gate_rejects_dirty_repo(self):
         h = self._harness()
         state = AgentState(task_class="git_repair", last_mutation_step=3, last_verification_step=4)

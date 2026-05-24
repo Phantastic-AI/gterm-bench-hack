@@ -53,7 +53,7 @@ class GeminiDirectAgent(BaseAgent):
         model = self.model_name or "google/gemini-3.5-flash"
         self.gemini_model = model.split("/", 1)[1] if model.startswith("google/") else model
         self.trace: TraceWriter | None = None
-        self.system_prompt = load_system_prompt() + "\n\nC007 runtime addendum: use a tight single-action coding-agent loop. Return exactly one observable action per turn. Do not use broad transaction actions; the runtime will reject them. Keep plan/debug/decision state in concise ledger text and host-side traces. Finish only through deterministic class gates: required paths, fresh meaningful checks, and no unrepaired failures. Semantic critic approval is not a completion signal."
+        self.system_prompt = load_system_prompt() + "\n\nC007.1 runtime addendum: use a tight single-action coding-agent loop. Return exactly one observable action per turn. Do not use broad transaction actions; the runtime will reject them. Keep plan/debug/decision state in concise ledger text and host-side traces. Finish only through deterministic class gates: required paths, fresh meaningful checks, and no unrepaired failures. Semantic critic approval is not a completion signal."
 
     @staticmethod
     def name() -> str:
@@ -253,6 +253,7 @@ class GeminiDirectAgent(BaseAgent):
                 break
 
             obs = await self._dispatch_action(environment, step, action, state, budget.command_timeout_sec)
+            self._update_dynamic_traits(state, action, obs)
             last_action_result = obs
             state.phase = "OBSERVE"
             forced_message = forced_message or self._behavior_repair_message(state)
@@ -298,6 +299,24 @@ class GeminiDirectAgent(BaseAgent):
             "behavior_repair_attempts": state.behavior_repair_attempts,
         }
 
+
+    def _update_dynamic_traits(self, state: AgentState, action: AgentAction, obs: str) -> None:
+        text = f"{action.command or ''}\n{action.ledger or ''}\n{obs}".lower()
+        additions: list[str] = []
+        if any(k in text for k in ("git reflog", "git merge", "merge conflict", "unmerged paths", "head@{", ".git", "git status")):
+            additions.append("git_repair")
+        if any(k in text for k in ("elf", "readelf", "objdump", "extract.js", "out.json", "section headers", "program headers")):
+            additions.append("binary_reverse")
+            if state.task_class == "build_compile_install" and not _has_trait(state, "build_install"):
+                state.task_class = "binary_reverse"
+        if any(k in text for k in ("cancellederror", "keyboardinterrupt", "max_concurrent", "cleaned up", "asyncio")):
+            additions.append("async_cancel")
+        if any(k in text for k in ("onerror", "javascript:", "<script", "selenium", "webdriver", "alert detected", "xss")):
+            additions.append("html_sanitizer")
+        for trait in additions:
+            if trait not in state.task_traits:
+                state.task_traits.append(trait)
+                state.add_ledger(f"Dynamic trait inferred: {trait}")
 
     def _choose_thinking_level(self, state: AgentState) -> str:
         if state.task_class == "simple_file":
@@ -662,8 +681,10 @@ PASS only if the touched artifacts plausibly solve the task and the latest relev
             checks.append(any(k in cmd for k in ("git status", "git diff", "git log", "git reflog", "git branch", "pytest", "cmp ", "md5sum", "sha1sum")))
         if _has_trait(state, "html_sanitizer"):
             checks.append(any(k in cmd for k in ("pytest", "selenium", "chrome", "chromium", "alert", "playwright", "onerror", "javascript:", "svg", "iframe")))
-        if state.task_class == "binary_reverse":
-            checks.append(any(k in cmd for k in ("readelf", "objdump", "file ", "strings", "node ", "python", "jq", "./")))
+        if _has_trait(state, "binary_reverse"):
+            checks.append(any(k in cmd for k in ("readelf", "objdump", "file ", "strings", "node ", "python", "jq", "./", "extract.js", "out.json")))
+        if _has_trait(state, "async_cancel"):
+            checks.append(any(k in cmd for k in ("cancel", "cleaned up", "unittest", "pytest", "python", "run.py")))
         if state.task_class == "code_debug":
             checks.append(any(k in cmd for k in ("pytest", "npm test", "yarn test", "pnpm test", "python -m", "python3 -m", "python -c", "python3 -c", "./test", "go test", "cargo test", "make test", "unittest")))
         if checks:
@@ -725,6 +746,10 @@ PASS only if the touched artifacts plausibly solve the task and the latest relev
                 git_gate = await self._git_repair_gate(environment, state, evidence, stale_verification, no_public_check)
                 if not git_gate.ok:
                     return git_gate
+            if _has_trait(state, "async_cancel") and not _async_check_has_cancel_cleanup(latest_check.command, latest_check.evidence):
+                return GateResult(False, "async_cancel requires cancellation cleanup evidence for all started tasks", stale_verification=stale_verification, no_public_check=no_public_check, evidence=evidence)
+            if _has_trait(state, "binary_reverse") and not _binary_check_is_output_or_extraction(latest_check.command, latest_check.evidence):
+                return GateResult(False, "binary_reverse requires extraction/output validation evidence", stale_verification=stale_verification, no_public_check=no_public_check, evidence=evidence)
         if no_public_check and not output_check_fresh:
             return GateResult(False, "no fresh public/self-check or required-output evidence", stale_verification=stale_verification, no_public_check=True, evidence=evidence)
         if stale_verification and not output_check_fresh:
@@ -793,6 +818,16 @@ def _build_check_has_install_smoke(command: str, evidence: str) -> bool:
     install_signal = any(k in text for k in ("/usr/local/bin/", "which pmars", "install -", "cp pmars /usr/local/bin"))
     smoke_signal = any(k in text for k in ("ldd", "pmars -", "results:", "tail -n", "no x11", "not found"))
     return install_signal and smoke_signal
+
+def _async_check_has_cancel_cleanup(command: str, evidence: str) -> bool:
+    text = f"{command}\n{evidence}".lower()
+    return ("cancel" in text or "keyboardinterrupt" in text or "cancellederror" in text) and ("cleaned up" in text or "cleanup" in text or "finally" in text) and ("pass" in text or "ok" in text or "exit_code=0" in text)
+
+
+def _binary_check_is_output_or_extraction(command: str, evidence: str) -> bool:
+    text = f"{command}\n{evidence}".lower()
+    return any(k in text for k in ("out.json", "extract.js", "jq", "json", "readelf", "objdump", "strings")) and ("exit_code=0" in text or "passed" in text or "ok" in text or "{" in evidence)
+
 
 def _browser_output_looks_dummy(ro: Any) -> bool:
     text = (getattr(ro, "evidence", "") or "").lower()
