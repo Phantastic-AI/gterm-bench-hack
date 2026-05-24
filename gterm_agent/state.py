@@ -358,6 +358,9 @@ def extract_required_outputs(instruction: str) -> list[RequiredOutput]:
                     continue
                 if any(bad in path for bad in ("/verifier", "/.git", "/logs/")):
                     continue
+                # Input/helper paths on a mixed-intent line are visible evidence, not deliverables.
+                if _path_has_input_role(line, match.start()) and not _path_has_output_role(line, match.start()):
+                    continue
                 # Common benchmark helper/test files are visible evidence, not deliverables,
                 # unless the instruction explicitly asks to edit/fix/modify them.
                 if base.startswith("test_") or base in {"test_outputs.py", "tests.py"}:
@@ -370,6 +373,16 @@ def extract_required_outputs(instruction: str) -> list[RequiredOutput]:
                     seen.add(path)
                     outputs.append(RequiredOutput(path=path, source="instruction_regex"))
     return outputs
+
+
+def _path_has_input_role(line: str, path_start: int) -> bool:
+    prefix = line[max(0, path_start - 48):path_start].lower()
+    return any(word in prefix for word in ("given ", "provided ", "using ", "use ", "read ", "input ", "from ", "inside ", "contains "))
+
+
+def _path_has_output_role(line: str, path_start: int) -> bool:
+    prefix = line[max(0, path_start - 48):path_start].lower()
+    return any(word in prefix for word in ("save ", "write ", "create ", "output ", "store ", "put ", "place ", "submit ", "final ", "result ", "named ", "called ", "fix ", "modify ", "edit ", "craft ", "payload ", "bypass ", "break "))
 
 
 def is_public_check_command(command: str, purpose: str = "") -> bool:

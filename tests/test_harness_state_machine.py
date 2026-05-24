@@ -317,6 +317,52 @@ class HarnessStateMachineTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(gate.ok)
         self.assertIn("dummy", gate.reason)
 
+    def test_c007_extract_required_outputs_skips_given_input_paths_on_mixed_line(self):
+        instruction = "Given /app/a.out, create /app/extract.js and write /app/out.json."
+        paths = [output.path for output in extract_required_outputs(instruction)]
+        self.assertNotIn("/app/a.out", paths)
+        self.assertIn("/app/extract.js", paths)
+        self.assertIn("/app/out.json", paths)
+
+    async def test_c007_binary_finish_requires_extractor_run_and_json_validation(self):
+        h = self._harness()
+        state = AgentState(task_class="binary_reverse", task_traits=["binary_reverse"], last_mutation_step=2, last_verification_step=3)
+        state.required_outputs.append(RequiredOutput(path="/app/out.json", source="test", exists=True))
+        state.public_checks.append(PublicCheck(step=3, command="strings /app/a.out | head && cat /app/out.json", exit_code=0, passed=True, evidence="exit_code=0\nout.json\n6a617e69 666c5f68", after_last_mutation=True))
+        gate = await h._pre_finish_gate(_FakeEnv(), state, "test")
+        self.assertFalse(gate.ok)
+        self.assertIn("binary_reverse", gate.reason)
+
+    async def test_c007_binary_finish_accepts_json_validated_extractor_run(self):
+        h = self._harness()
+        state = AgentState(task_class="binary_reverse", task_traits=["binary_reverse"], last_mutation_step=2, last_verification_step=3)
+        state.required_outputs.append(RequiredOutput(path="/app/out.json", source="test", exists=True))
+        evidence = 'exit_code=0\nstdout:\nvalid_json=true /app/out.json {"secret":"ok"}'
+        state.public_checks.append(PublicCheck(step=3, command="node /app/extract.js /app/a.out > /app/out.json && jq . /app/out.json", exit_code=0, passed=True, evidence=evidence, after_last_mutation=True))
+        gate = await h._pre_finish_gate(_FakeEnv(), state, "test")
+        self.assertTrue(gate.ok)
+
+
+    async def test_c007_binary_finish_rejects_keyword_only_fake_check(self):
+        h = self._harness()
+        state = AgentState(task_class="binary_reverse", task_traits=["binary_reverse"], last_mutation_step=2, last_verification_step=3)
+        state.required_outputs.append(RequiredOutput(path="/app/out.json", source="test", exists=True))
+        evidence = 'exit_code=0\nstdout:\nvalid_json=true /app/out.json {"x":1}'
+        state.public_checks.append(PublicCheck(step=3, command="echo extract.js jq out.json", exit_code=0, passed=True, evidence=evidence, after_last_mutation=True))
+        gate = await h._pre_finish_gate(_FakeEnv(), state, "test")
+        self.assertFalse(gate.ok)
+        self.assertIn("binary_reverse", gate.reason)
+
+    async def test_c007_binary_finish_rejects_comment_only_fake_check(self):
+        h = self._harness()
+        state = AgentState(task_class="binary_reverse", task_traits=["binary_reverse"], last_mutation_step=2, last_verification_step=3)
+        state.required_outputs.append(RequiredOutput(path="/app/out.json", source="test", exists=True))
+        evidence = 'exit_code=0\nstdout:\nvalid_json=true /app/out.json {"x":1}'
+        state.public_checks.append(PublicCheck(step=3, command="cat /app/out.json # extract.js jq", exit_code=0, passed=True, evidence=evidence, after_last_mutation=True))
+        gate = await h._pre_finish_gate(_FakeEnv(), state, "test")
+        self.assertFalse(gate.ok)
+        self.assertIn("binary_reverse", gate.reason)
+
     def test_required_output_extraction_handles_create_filter_but_not_tests(self):
         instruction = """
         Create a python file /app/filter.py that removes JavaScript.

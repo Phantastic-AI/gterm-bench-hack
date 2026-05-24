@@ -870,8 +870,25 @@ def _browser_check_has_real_execution(command: str, evidence: str) -> bool:
 
 
 def _binary_check_is_output_or_extraction(command: str, evidence: str) -> bool:
+    cmd = command.lower()
+    cmd_no_comments = "\n".join(part.split("#", 1)[0] for part in cmd.splitlines())
     text = f"{command}\n{evidence}".lower()
-    return any(k in text for k in ("out.json", "extract.js", "jq", "json", "readelf", "objdump", "strings")) and ("exit_code=0" in text or "passed" in text or "ok" in text or "{" in evidence)
+    if "exit_code=0" not in text and "passed" not in text and " ok" not in text:
+        return False
+    if re.match(r"\s*(echo|printf|cat|grep|head|tail)\b", cmd_no_comments):
+        return False
+    ran_extractor = bool(
+        re.search(r"\bnode\s+[^;&|#\n]*extract\.js\b", cmd_no_comments)
+        or re.search(r"\bpython(?:3(?:\.\d+)?)?\s+[^;&|#\n]*extract\.py\b", cmd_no_comments)
+        or re.search(r"(?:^|[;&|]\s*)\./[^;&|#\n]*extract[^;&|#\n]*", cmd_no_comments)
+    )
+    validated_output = bool(
+        re.search(r"(?:^|[;&|]\s*)jq\s+[^;&|#\n]*/?out\.json\b", cmd_no_comments)
+        or re.search(r"\bpython(?:3(?:\.\d+)?)?\s+-m\s+json\.tool\s+[^;&|#\n]*/?out\.json\b", cmd_no_comments)
+        or ("node -e" in cmd_no_comments and "json.parse" in cmd_no_comments and "out.json" in cmd_no_comments)
+    )
+    output_signal = "out.json" in text and ("{" in evidence or "[" in evidence or "valid_json=true" in text)
+    return ran_extractor and validated_output and output_signal
 
 
 def _browser_output_looks_dummy(ro: Any) -> bool:
