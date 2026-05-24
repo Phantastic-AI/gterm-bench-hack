@@ -380,6 +380,8 @@ class GeminiDirectAgent(BaseAgent):
         return self._post_reflection_repair_message(state)
 
     def _requires_reflection(self, state: AgentState) -> bool:
+        if state.task_class == "simple_file":
+            return False
         latest = state.public_checks[-1] if state.public_checks else None
         needs = bool(
             latest
