@@ -302,11 +302,15 @@ class GeminiDirectAgent(BaseAgent):
 
 
     def _update_dynamic_traits(self, state: AgentState, action: AgentAction, obs: str) -> None:
-        text = f"{action.command or ''}\n{action.ledger or ''}\n{obs}".lower()
+        action_text = f"{action.command or ''}\n{action.ledger or ''}".lower()
+        obs_text = obs.lower()
+        text = f"{action_text}\n{obs_text}"
         additions: list[str] = []
         if any(k in text for k in ("git reflog", "git merge", "merge conflict", "unmerged paths", "head@{", ".git", "git status")):
             additions.append("git_repair")
-        if any(k in text for k in ("elf", "readelf", "objdump", "extract.js", "out.json", "section headers", "program headers")):
+        binary_action_signal = any(k in action_text for k in ("readelf", "objdump", "extract.js", "out.json", "section headers", "program headers", "file a.out", "file /app/a.out"))
+        binary_observation_signal = "elf" in obs_text and not _has_trait(state, "git_repair")
+        if binary_action_signal or binary_observation_signal:
             additions.append("binary_reverse")
             if state.task_class == "build_compile_install" and not _has_trait(state, "build_install"):
                 state.task_class = "binary_reverse"

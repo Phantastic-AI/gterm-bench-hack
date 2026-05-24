@@ -341,6 +341,24 @@ class HarnessStateMachineTests(unittest.IsolatedAsyncioTestCase):
         h._update_dynamic_traits(state, parse_action('{"action":"shell","command":"cd repo && git merge abc"}'), "CONFLICT (content): Merge conflict in f")
         self.assertIn("git_repair", state.task_traits)
 
+    def test_c007_dynamic_binary_trait_ignores_git_log_content_noise(self):
+        h = self._harness()
+        state = AgentState(task_class="unknown", task_traits=["git_repair"])
+        action = parse_action('{"action":"shell","command":"cd repo && git status && git log -n 5"}')
+
+        h._update_dynamic_traits(state, action, "commit abc\n docs mention extract.js and out.json in a blog post")
+
+        self.assertIn("git_repair", state.task_traits)
+        self.assertNotIn("binary_reverse", state.task_traits)
+
+    def test_c007_dynamic_binary_trait_uses_binary_actions_not_git_noise(self):
+        h = self._harness()
+        state = AgentState(task_class="unknown")
+
+        h._update_dynamic_traits(state, parse_action('{"action":"shell","command":"readelf -l a.out"}'), "program headers")
+
+        self.assertIn("binary_reverse", state.task_traits)
+
     def test_c007_extract_elf_classifies_as_binary_not_build(self):
         budget = classify_task_budget(
             "Given an ELF binary /app/a.out, create /app/extract.js that extracts section data and writes /app/out.json.",
